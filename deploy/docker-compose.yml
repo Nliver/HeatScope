@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: heatscope
+      POSTGRES_USER: heatscope
+      POSTGRES_PASSWORD: heatscope_local_only
+    ports: ["5432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: heatscope
+      MINIO_ROOT_PASSWORD: heatscope_local_only
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio_data:/data"]
+  vault:
+    image: hashicorp/vault:1.18
+    command: server -dev -dev-root-token-id=heatscope_local_only -dev-listen-address=0.0.0.0:8200
+    cap_add: ["IPC_LOCK"]
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+    ports: ["8200:8200"]
+  api:
+    build: { context: .., dockerfile: apps/api/Dockerfile }
+    environment:
+      DATABASE_URL: postgres://heatscope:heatscope_local_only@postgres:5432/heatscope?sslmode=disable
+      REDIS_ADDR: redis:6379
+      CORS_ORIGIN: http://localhost:3000
+      AUTH_MODE: development
+      AUTO_MIGRATE: "true"
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: heatscope_local_only
+      VAULT_KV_MOUNT: secret
+    ports: ["8080:8080"]
+    depends_on: [postgres, redis, minio, vault]
+  worker:
+    build: { context: .., dockerfile: apps/worker/Dockerfile }
+    environment:
+      DATABASE_URL: postgres://heatscope:heatscope_local_only@postgres:5432/heatscope?sslmode=disable
+      REDIS_ADDR: redis:6379
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: heatscope_local_only
+      VAULT_KV_MOUNT: secret
+    depends_on: [postgres, redis, minio, vault]
+volumes:
+  postgres_data:
+  minio_data:
