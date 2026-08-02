@@ -1,0 +1,131 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: heatscope-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend-test:
+    name: Frontend test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      # apps/web has no separate lockfile yet, so install its package manifest
+      # explicitly without writing a lockfile into the repository checkout.
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm install --no-audit --no-fund --package-lock=false
+
+      - name: Check diff whitespace
+        run: git diff --check
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Upload GitHub build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: heatscope-next-build-${{ github.sha }}
+          path: apps/web/.next
+          if-no-files-found: error
+          retention-days: 7
+
+  secret-scan:
+    name: Secret leak scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository for credentials
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  github-build:
+    name: GitHub deployment build gate
+    needs: [frontend-test, secret-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download verified frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: heatscope-next-build-${{ github.sha }}
+          path: apps/web/.next
+
+      - name: Verify build artifact
+        working-directory: apps/web
+        run: test -f .next/BUILD_ID
+
+  vercel-production:
+    name: Deploy to Vercel production
+    needs: [frontend-test, secret-scan, github-build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Vercel CLI dependencies
+        run: npm ci
+
+      - name: Pull Vercel production settings
+        run: npx vercel --cwd apps/web pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build with Vercel
+        run: npx vercel --cwd apps/web build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy prebuilt output
+        id: deploy
+        run: |
+          deployment_json="$(npx vercel --cwd apps/web deploy --prebuilt --prod --yes --format=json --token="$VERCEL_TOKEN")"
+          deployment_url="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.url || value.inspectorUrl || "")' "$deployment_json")"
+          test -n "$deployment_url"
+          echo "url=$deployment_url" >> "$GITHUB_OUTPUT"
+          echo "Deployed: $deployment_url"
