@@ -65,7 +65,7 @@ export function useHistoryRecordReuse() {
 
   function reuseHistoricalConfiguration() {
     if (!pendingRecord?.modelConfigSnapshot?.length) return;
-    resume(pendingRecord, structuredClone(pendingRecord.modelConfigSnapshot));
+    resume(pendingRecord, modelConfigsForKeyRefresh(pendingRecord));
   }
 
   function reconfigureModels() {

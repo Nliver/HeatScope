@@ -12,6 +12,7 @@ import { neutralizePreviewHtml } from '../../lib/html-preview';
 import KnowledgeView from '../knowledge-view';
 import { readKnowledgeLibrary } from '../../lib/knowledge';
 import { InfoHint, TextDisclosure } from '../ui-text';
+import { isProviderProtocol, protocolLabel } from '../../lib/model-protocol';
 
 const number = new Intl.NumberFormat('zh-CN');
 const goals: Goal[] = ['注册/试用', '购买/询价', '内容消费', '活动领取', '自定义关键动作'];
@@ -167,7 +168,7 @@ type HistorySnapshotOverrides = {
 };
 
 function ModelConfigView({ models, onOpen }: { models: ModelConfig[]; onOpen(): void }) {
-  return <div className="console-page"><div className="console-page-head"><div><span>模型配置</span><h1>选择你的分析引擎</h1><InfoHint label="模型配置说明">配置并测试供应商模型后，诊断任务会读取已启用且连接成功的服务。</InfoHint></div><button type="button" className="console-button primary" onClick={onOpen}><Plus size={15} /> 添加模型</button></div><div className="model-config-panel"><div className="model-config-head"><div><h2>已配置服务</h2><InfoHint label="服务状态说明">只有启用且连接成功的模型才会参与分析和 HTML 生成。</InfoHint></div><span>{models.filter((item) => item.connectionStatus === 'success').length} 个已连接</span></div><div className="model-config-list">{models.map((model) => <article key={model.id}><div className="model-config-name"><span className={`model-dot ${model.connectionStatus || 'untested'}`} /><div><b>{model.name}</b><small>{model.model} · {model.protocol === 'responses' ? 'Responses API' : 'Chat Completions'}</small></div></div><div className="model-config-meta"><span className={`model-state ${model.connectionStatus || 'untested'}`}>{model.connectionStatus === 'success' ? '已连接' : model.connectionStatus === 'failed' ? '连接失败' : model.connectionStatus === 'testing' ? '检测中' : '未检测'}</span><span>{model.enabled ? '启用中' : '已停用'}</span></div></article>)}<article className="model-config-local"><div><b>本地规则</b><small>确定性规则引擎 · 始终执行</small></div><span className="model-state success">可用</span></article>{models.length === 0 && <div className="model-config-empty"><KeyRound size={19} /><b>尚未添加模型服务</b></div>}</div><div className="model-config-foot"><InfoHint label="密钥存储说明">密钥只会随分析请求通过 HTTPS 发送，当前版本保存在浏览器工作区。</InfoHint><button type="button" className="console-button" onClick={onOpen}>管理模型配置</button></div></div></div>;
+  return <div className="console-page"><div className="console-page-head"><div><span>模型配置</span><h1>选择你的分析引擎</h1><InfoHint label="模型配置说明">配置并测试供应商模型后，诊断任务会读取已启用且连接成功的服务。</InfoHint></div><button type="button" className="console-button primary" onClick={onOpen}><Plus size={15} /> 添加模型</button></div><div className="model-config-panel"><div className="model-config-head"><div><h2>已配置服务</h2><InfoHint label="服务状态说明">只有启用且连接成功的模型才会参与分析和 HTML 生成。</InfoHint></div><span>{models.filter((item) => item.connectionStatus === 'success').length} 个已连接</span></div><div className="model-config-list">{models.map((model) => <article key={model.id}><div className="model-config-name"><span className={`model-dot ${model.connectionStatus || 'untested'}`} /><div><b>{model.name}</b><small>{model.model} · {protocolLabel(model.protocol)}</small></div></div><div className="model-config-meta"><span className={`model-state ${model.connectionStatus || 'untested'}`}>{model.connectionStatus === 'success' ? '已连接' : model.connectionStatus === 'failed' ? '连接失败' : model.connectionStatus === 'testing' ? '检测中' : '未检测'}</span><span>{model.enabled ? '启用中' : '已停用'}</span></div></article>)}<article className="model-config-local"><div><b>本地规则</b><small>确定性规则引擎 · 始终执行</small></div><span className="model-state success">可用</span></article>{models.length === 0 && <div className="model-config-empty"><KeyRound size={19} /><b>尚未添加模型服务</b></div>}</div><div className="model-config-foot"><InfoHint label="密钥存储说明">密钥只会随分析请求通过 HTTPS 发送，当前版本保存在浏览器工作区。</InfoHint><button type="button" className="console-button" onClick={onOpen}>管理模型配置</button></div></div></div>;
 }
 
 function readWorkspace(): PersistedWorkspace | undefined {
@@ -955,6 +956,12 @@ export default function Page() {
   const enabledModels = models.filter((model) => model.enabled && model.apiKey.trim());
   const availableModels = enabledModels.filter((model) => model.connectionStatus === 'success');
   const hasUnverifiedEnabledModel = enabledModels.some((model) => model.connectionStatus !== 'success');
+  const modelProgressSummary = useMemo(() => ({
+    queued: modelProgress.filter((item) => item.status === 'queued').length,
+    running: modelProgress.filter((item) => item.status === 'running').length,
+    success: modelProgress.filter((item) => item.status === 'success').length,
+    failed: modelProgress.filter((item) => item.status === 'failed').length,
+  }), [modelProgress]);
   const displayedDesign = pageDesign;
   const selectedModelResult = results.find((item) => item.modelId === selectedModelId);
   const activeHtmlAnalysis = results.find((item) => item.modelId === activeHtmlModelId);
@@ -1064,7 +1071,7 @@ export default function Page() {
     setHeatmapUrl(restoredHeatmapPreviewUrl);
     setIncludeHeatmapInModel(Boolean(workspace.includeHeatmapInModel));
     setMarkedCtas(workspace.markedCtas || []);
-    setModels(workspace.models || []);
+    setModels((workspace.models || []).map((model) => ({ ...model, protocol: isProviderProtocol(model.protocol) ? model.protocol : 'responses' })));
     setLocal(workspace.local);
     setResults(workspace.results || []);
     setModelProgress((workspace.results || []).map((item) => ({ modelId: item.modelId, modelName: item.modelName, status: item.status, latencyMs: item.latencyMs, error: item.error })));
@@ -1225,7 +1232,7 @@ export default function Page() {
     const withoutChecksum: Omit<HistoryRecord, 'diagnosisChecksum'> = {
       id,
       inputSnapshot,
-      modelConfigSnapshot: structuredClone(models),
+      modelConfigSnapshot: structuredClone(models).map(({ apiKey: _apiKey, ...config }) => config),
       localOutput,
       modelOutputs,
       adoptedBlueprint: pageDesignSnapshot || htmlDesignSnapshot.length ? { pageDesign: pageDesignSnapshot, htmlDesigns: htmlDesignSnapshot, activeHtmlModelId: activeHtmlSnapshot, uiPrompt } : undefined,
@@ -1281,16 +1288,29 @@ export default function Page() {
   async function analyze() {
     if (!evidence) { setError('请先填写页面 URL 并导入行为数据。'); return; }
     const taskId = updateHistory('running', historyId || safeId(), { stage: 2 });
-    setRunning(true); setError(''); resetAnalysis(); setModelProgress(availableModels.map((model) => ({ modelId: model.id, modelName: model.name, status: 'queued' as const }))); setNotice(`模型分析已启动：本地规则与 ${availableModels.length} 个模型并行运行。`);
+    setRunning(true); setError(''); resetAnalysis(); setModelProgress(availableModels.map((model) => ({ modelId: model.id, modelName: model.name, protocol: model.protocol, status: 'queued' as const }))); setNotice('模型分析已启动：先运行本地规则引擎。');
     try {
-      const localPromise = runLocalAnalysis(evidence);
-      const knowledgeContext = readKnowledgeLibrary().entries.filter((entry) => entry.enabled).map(({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags }) => ({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags }));
-      const modelPromise = availableModels.length ? runModelAnalysis(evidence, availableModels, undefined, (progress) => setModelProgress((items) => items.map((item) => item.modelId === progress.modelId ? { ...item, ...progress } : item)), knowledgeContext) : Promise.resolve([] as ModelResult[]);
-      const [localResult, modelResults] = await Promise.all([localPromise, modelPromise]);
+      const localResult = await runLocalAnalysis(evidence);
       setLocal(localResult);
-      setResults(modelResults);
-      setSelectedHtmlModelIds(modelResults.filter((item) => item.status === 'success').map((item) => item.modelId));
-      setSelectedModelId(modelResults.find((item) => item.status === 'success')?.modelId || '');
+      setNotice(availableModels.length ? `本地规则已完成，开始调用 ${availableModels.length} 个模型。` : '本地规则已完成；配置并连接至少一个模型后才能创建 HTML 生成任务。');
+      const knowledgeContext = readKnowledgeLibrary().entries.filter((entry) => entry.enabled).map(({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags }) => ({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags }));
+      const modelResults = availableModels.length ? await runModelAnalysis(
+        evidence,
+        availableModels,
+        localResult,
+        (progress) => setModelProgress((items) => items.map((item) => item.modelId === progress.modelId ? { ...item, ...progress } : item)),
+        (result) => {
+          setResults((items) => {
+            const next = [...items.filter((item) => item.modelId !== result.modelId), result];
+            return next;
+          });
+          if (result.status === 'success') {
+            setSelectedHtmlModelIds((items) => items.includes(result.modelId) ? items : [...items, result.modelId]);
+            setSelectedModelId((current) => current || result.modelId);
+          }
+        },
+        knowledgeContext,
+      ) : [];
       const failed = modelResults.filter((item) => item.status === 'failed');
       updateHistory('pending_review', taskId, { localOutput: localResult, modelOutputs: modelResults, stage: 2 });
       setNotice(availableModels.length ? failed.length ? `本地规则与 ${modelResults.length - failed.length} 个模型已完成，${failed.length} 个模型失败。请确认勾选项并检查合成 Prompt。` : `本地规则与 ${modelResults.length} 个模型均已完成。请确认勾选项并检查合成 Prompt。` : '本地规则已完成；配置并连接至少一个模型后才能创建 HTML 生成任务。');
@@ -1468,7 +1488,7 @@ export default function Page() {
               <strong className="mobile-step-title">{workflowItems.find((item) => item.id === currentPanel)?.label}</strong>
               <b>{sessionLabel}</b>
               {comparisonBaseline && <span className="draft-baseline-note">对比基线：{comparisonBaseline.name}</span>}
-              <span>{currentStep === 0 ? '完成证据门禁后解锁模型分析' : currentStep === 1 ? selectedJobsComplete ? (hasInFlightHtmlJobs ? '已有 HTML 可查看，其他任务仍在生成' : failedHtmlJobs.length ? `已有 HTML 可查看，${failedHtmlJobs.length} 个失败项待在第 3 步处理` : '已有 HTML 可查看，可进入 UI 结果') : local ? '分析已完成，待确认 Prompt 并生成' : '本地规则与模型并行运行' : currentStep === 2 ? '比较独立 HTML 与优化点后进入复盘' : '上传改版后同口径数据'}</span>
+              <span>{currentStep === 0 ? '完成证据门禁后解锁模型分析' : currentStep === 1 ? selectedJobsComplete ? (hasInFlightHtmlJobs ? '已有 HTML 可查看，其他任务仍在生成' : failedHtmlJobs.length ? `已有 HTML 可查看，${failedHtmlJobs.length} 个失败项待在第 3 步处理` : '已有 HTML 可查看，可进入 UI 结果') : local ? '本地已完成，等待模型逐个返回' : running ? '先运行本地规则，再调用模型' : '等待开始分析' : currentStep === 2 ? '比较独立 HTML 与优化点后进入复盘' : '上传改版后同口径数据'}</span>
             </div>
           </div>
 
@@ -1550,15 +1570,16 @@ export default function Page() {
 
                   <div className="analysis-board console-analysis">
                     <div className="engine-summary">
-                      <div><span>已验证模型</span><b>{availableModels.length}</b><small>{hasUnverifiedEnabledModel ? '仍有启用模型需要检测' : availableModels.length ? '将与本地规则并行运行' : '可在全局设置中添加模型'}</small></div>
+                      <div><span>已验证模型</span><b>{availableModels.length}</b><small>{hasUnverifiedEnabledModel ? '仍有启用模型需要检测' : availableModels.length ? '本地规则完成后逐个返回' : '可在全局设置中添加模型'}</small></div>
                       <button type="button" className="model-link" onClick={() => { setModelDialogOpen(true); setModelError(''); }}><KeyRound size={15} /> 管理模型服务</button>
                     </div>
-                    <div className="analysis-track-grid" aria-label="本地规则与各模型并行分析进度">
-                      <article className={local ? 'complete' : running ? 'running' : ''}><span><Settings2 size={15} /> 轨道 A</span><b>本地规则引擎</b><small>{local ? `${local.insights.length} 条硬约束已命中` : running ? '分析中' : '待启动'}</small></article>
+                    <div className="analysis-track-grid" aria-label="本地规则先行与各模型分析进度">
+                      <article className={local ? 'complete' : running ? 'running' : ''}><span><Settings2 size={15} /> 本地规则</span><b>本地规则引擎</b><small>{local ? `${local.insights.length} 条硬约束已命中` : running ? '分析中' : '待启动'}</small></article>
                       {modelProgress.length ? modelProgress.map((item) => <article key={item.modelId} className={item.status === 'success' ? 'complete' : item.status === 'failed' ? 'failed' : item.status === 'running' ? 'running' : ''}>
-                        <span><Sparkles size={15} /> 模型分析</span><b>{item.modelName}</b><small>{item.status === 'queued' ? '排队中' : item.status === 'running' ? '分析中 · 正在等待模型返回' : item.status === 'success' ? `已完成 · ${item.latencyMs || 0}ms` : `调用失败 · ${formatProviderError(item.error, '请检查模型配置')}`}</small>
+                        <span><Sparkles size={15} /> {item.protocol ? protocolLabel(item.protocol) : '模型分析'}</span><b>{item.modelName}</b><small>{item.status === 'queued' ? '排队中' : item.status === 'running' ? '分析中 · 正在等待模型返回' : item.status === 'success' ? `已完成 · ${item.latencyMs || 0}ms` : `调用失败 · ${formatProviderError(item.error, '请检查模型配置')}`}</small>
                       </article>) : <article className={running ? 'running' : ''}><span><Sparkles size={15} /> 轨道 B</span><b>尚未配置已连接模型</b><small>{running ? '本地规则运行中' : '待配置'}</small></article>}
                     </div>
+                    {modelProgress.length > 0 && <div className="analysis-progress-summary" aria-live="polite"><span>排队 {modelProgressSummary.queued}</span><span className="is-running">分析中 {modelProgressSummary.running}</span><span className="is-success">完成 {modelProgressSummary.success}</span><span className="is-failed">失败 {modelProgressSummary.failed}</span></div>}
                     {heatmapName && <label className="vision-toggle"><input type="checkbox" checked={includeHeatmapInModel} onChange={(event) => changeVisualInput(event.target.checked)} />将热力图作为模型视觉输入</label>}
                     <div className="analysis-cta">
                       <div><b>{hasUnverifiedEnabledModel ? '请先完成启用模型的连接检测' : availableModels.length ? `将并行比较 ${availableModels.length} 个模型反馈，再选择一个或多个模型生成页面` : '先用本地规则完成分析'}</b></div>
@@ -1681,7 +1702,7 @@ export default function Page() {
             {models.length > 0 && <div className="model-list model-dialog-list">
               {models.map((model) => <div className="model-card" key={model.id}>
                 <div className="model-card-row">
-                  <label><input type="checkbox" checked={model.enabled} onChange={() => setModels((items) => items.map((item) => item.id === model.id ? { ...item, enabled: !item.enabled } : item))} /><span><b>{model.name}</b><small>{model.model} / {model.protocol}</small></span></label>
+                  <label><input type="checkbox" checked={model.enabled} onChange={() => setModels((items) => items.map((item) => item.id === model.id ? { ...item, enabled: !item.enabled } : item))} /><span><b>{model.name}</b><small>{model.model} / {protocolLabel(model.protocol)}</small></span></label>
                   <div className="model-card-actions">
                     <span className={`connection-status ${model.connectionStatus || 'untested'}`}>{model.connectionStatus === 'success' ? <CircleCheck size={14} /> : model.connectionStatus === 'failed' ? <CircleAlert size={14} /> : <Wifi size={14} />}{model.connectionStatus === 'success' ? `连接成功${model.connectionLatencyMs ? ` / ${model.connectionLatencyMs}ms` : ''}` : model.connectionStatus === 'testing' ? '检测中' : model.connectionStatus === 'failed' ? '连接失败' : '未检测'}</span>
                     <button type="button" className="model-action" onClick={() => checkModelConnection(model)} disabled={model.connectionStatus === 'testing'}><Wifi size={14} /> {model.connectionStatus === 'testing' ? '检测中' : '测试连接'}</button>
@@ -1692,7 +1713,7 @@ export default function Page() {
                 {model.connectionStatus === 'failed' && <p className="model-connection-error">{model.connectionError || '未能连接到模型服务。请编辑配置后重试。'}</p>}
                 {editingModel && editingModel.id === model.id && <form className="model-edit-form" onSubmit={saveModelEdit}>
                   <label>显示名称<input value={editingModel.name} onChange={(event) => setEditingModel({ ...editingModel, name: event.target.value })} /></label>
-                  <label>协议<select value={editingModel.protocol} onChange={(event) => setEditingModel({ ...editingModel, protocol: event.target.value as ModelConfig['protocol'] })}><option value="responses">Responses API</option><option value="chat_completions">Chat Completions</option></select></label>
+                  <label>协议<select value={editingModel.protocol} onChange={(event) => setEditingModel({ ...editingModel, protocol: event.target.value as ModelConfig['protocol'], connectionStatus: 'untested', connectionError: undefined, connectionLatencyMs: undefined })}><option value="responses">Responses API</option><option value="chat_completions">Chat Completions</option><option value="anthropic_messages">Anthropic Messages API</option></select></label>
                   <label className="wide">Base URL<input type="url" value={editingModel.baseUrl} onChange={(event) => setEditingModel({ ...editingModel, baseUrl: event.target.value })} /></label>
                   <label>模型 ID<input value={editingModel.model} onChange={(event) => setEditingModel({ ...editingModel, model: event.target.value })} /></label>
                   <label>推理强度<select value={editingModel.reasoningEffort || 'medium'} onChange={(event) => setEditingModel({ ...editingModel, reasoningEffort: event.target.value as NonNullable<ModelConfig['reasoningEffort']> })}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>
@@ -1707,7 +1728,7 @@ export default function Page() {
               ? <form className="model-form model-dialog-form" onSubmit={addModel}>
                 <div className="form-block-title"><b>添加模型服务</b><InfoHint label="连接检测说明">添加后请先测试连接，再参与分析。</InfoHint></div>
                 <label>显示名称<input value={modelDraft.name} onChange={(event) => { setModelDraft({ ...modelDraft, name: event.target.value }); setModelError(''); }} placeholder="例如：GPT 分析" /></label>
-                <label>协议<select value={modelDraft.protocol} onChange={(event) => { setModelDraft({ ...modelDraft, protocol: event.target.value as ModelConfig['protocol'] }); setModelError(''); }}><option value="responses">Responses API</option><option value="chat_completions">Chat Completions</option></select></label>
+                <label>协议<select value={modelDraft.protocol} onChange={(event) => { setModelDraft({ ...modelDraft, protocol: event.target.value as ModelConfig['protocol'] }); setModelError(''); }}><option value="responses">Responses API</option><option value="chat_completions">Chat Completions</option><option value="anthropic_messages">Anthropic Messages API</option></select></label>
                 <label className="wide">Base URL<input type="url" value={modelDraft.baseUrl} onChange={(event) => { setModelDraft({ ...modelDraft, baseUrl: event.target.value }); setModelError(''); }} placeholder="https://api.example.com/v1" /></label>
                 <label>模型 ID<input value={modelDraft.model} onChange={(event) => { setModelDraft({ ...modelDraft, model: event.target.value }); setModelError(''); }} placeholder="gpt-5.4" /></label>
                 <label>推理强度<select value={modelDraft.reasoningEffort} onChange={(event) => setModelDraft({ ...modelDraft, reasoningEffort: event.target.value as NonNullable<ModelConfig['reasoningEffort']> })}><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>

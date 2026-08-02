@@ -53,7 +53,8 @@ export type ReviewConclusion = {
 export type HistoryRecord = {
   id: string;
   inputSnapshot: HistoryInputSnapshot;
-  modelConfigSnapshot?: ModelConfig[];
+  /** Non-secret model configuration snapshot. API keys are deliberately excluded. */
+  modelConfigSnapshot?: Array<Omit<ModelConfig, 'apiKey'>>;
   localOutput?: LocalAnalysis;
   modelOutputs: ModelResult[];
   adoptedBlueprint?: AdoptedBlueprint;
@@ -309,16 +310,15 @@ export function updateReviewConclusion(recordId: string, conclusion: ReviewConcl
   return next;
 }
 
-type ComparableModelConfig = Pick<ModelConfig, 'id' | 'name' | 'baseUrl' | 'model' | 'protocol' | 'apiKey' | 'reasoningEffort' | 'timeoutSeconds' | 'enabled'>;
+type ComparableModelConfig = Pick<ModelConfig, 'id' | 'name' | 'baseUrl' | 'model' | 'protocol' | 'reasoningEffort' | 'timeoutSeconds' | 'enabled'>;
 
-function comparableModelConfig(model: ModelConfig): ComparableModelConfig {
+function comparableModelConfig(model: Pick<ModelConfig, 'id' | 'name' | 'baseUrl' | 'model' | 'protocol' | 'reasoningEffort' | 'timeoutSeconds' | 'enabled'>): ComparableModelConfig {
   return {
     id: model.id,
     name: model.name.trim(),
     baseUrl: model.baseUrl.trim().replace(/\/+$/, ''),
     model: model.model.trim(),
     protocol: model.protocol,
-    apiKey: model.apiKey,
     reasoningEffort: model.reasoningEffort,
     timeoutSeconds: model.timeoutSeconds,
     enabled: model.enabled,
@@ -335,7 +335,7 @@ export function readWorkspaceModelConfigs(): ModelConfig[] {
   }
 }
 
-export function modelConfigFingerprint(models: ModelConfig[]) {
+export function modelConfigFingerprint(models: Array<Pick<ModelConfig, 'id' | 'name' | 'baseUrl' | 'model' | 'protocol' | 'reasoningEffort' | 'timeoutSeconds' | 'enabled'>>) {
   const comparable = models.map(comparableModelConfig).sort((left, right) => left.id.localeCompare(right.id));
   return hashText(JSON.stringify(stableValue(comparable)));
 }
@@ -346,6 +346,7 @@ export function compareHistoryModelConfigs(record: HistoryRecord, currentModels 
   const historicalModels = record.modelConfigSnapshot;
   if (!historicalModels?.length) return 'history_missing';
   if (!currentModels.length) return 'current_missing';
+  if (currentModels.some((model) => !model.apiKey.trim())) return 'current_missing';
   return modelConfigFingerprint(historicalModels) === modelConfigFingerprint(currentModels) ? 'match' : 'mismatch';
 }
 

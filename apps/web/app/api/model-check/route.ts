@@ -1,6 +1,8 @@
 import { promises as dns } from 'node:dns';
 import net from 'node:net';
 import { NextResponse } from 'next/server';
+import { buildProviderRequest, extractProviderText, isProviderProtocol } from '../../../lib/model-protocol';
+import type { ProviderProtocol } from '../../../lib/model-protocol';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,7 +12,7 @@ type Model = {
   name?: string;
   baseUrl?: string;
   model?: string;
-  protocol?: 'responses' | 'chat_completions';
+  protocol?: ProviderProtocol;
   apiKey?: string;
   reasoningEffort?: string;
   timeoutSeconds?: number;
@@ -34,29 +36,25 @@ async function assertPublicEndpoint(raw: string) {
   return url;
 }
 
-function apiRoot(url: URL) { const base = url.toString().replace(/\/$/, ''); return /\/v\d+$/i.test(url.pathname) ? base : `${base}/v1`; }
-
 export async function POST(request: Request) {
   const started = Date.now();
   try {
     const { model } = await request.json() as { model?: Model };
-    if (!model?.baseUrl || !model.model || !model.apiKey || !model.protocol) throw new Error('请填写模型名称、Base URL、模型 ID、协议和 API Key。');
+    if (!model?.baseUrl || !model.model || !model.apiKey) throw new Error('请填写模型名称、Base URL、模型 ID、协议和 API Key。');
+    const protocol = isProviderProtocol(model.protocol) ? model.protocol : 'responses';
     const endpoint = await assertPublicEndpoint(model.baseUrl);
-    const root = apiRoot(endpoint);
-    const body = model.protocol === 'responses'
-      ? { model: model.model, input: '请只返回 OK。', reasoning: model.reasoningEffort ? { effort: model.reasoningEffort } : undefined, max_output_tokens: 64 }
-      : { model: model.model, messages: [{ role: 'user', content: '请只返回 OK。' }], max_tokens: 64, temperature: 0 };
-    const path = model.protocol === 'responses' ? '/responses' : '/chat/completions';
+    const providerRequest = buildProviderRequest({ baseUrl: endpoint.toString(), model: model.model, apiKey: model.apiKey, protocol, reasoningEffort: model.reasoningEffort }, { prompt: '请只返回 OK。', maxTokens: 64, temperature: 0 });
     const timeoutSeconds = Math.min(60, Math.max(15, Number(model.timeoutSeconds) || 30));
-    const response = await fetch(`${root}${path}`, {
+    const response = await fetch(providerRequest.url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
+      headers: providerRequest.headers,
+      body: JSON.stringify(providerRequest.body),
       redirect: 'error',
       signal: AbortSignal.timeout(timeoutSeconds * 1000),
     });
     const payload = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(messageOf((payload as { error?: { message?: unknown } })?.error?.message, `供应商返回 HTTP ${response.status}`));
+    if (!response.ok) throw new Error(messageOf((payload as { error?: { message?: unknown } })?.error?.message || (payload as { message?: unknown })?.message, `供应商返回 HTTP ${response.status}`));
+    if (!extractProviderText(payload, protocol)) throw new Error('模型服务返回为空，请检查协议与模型配置。');
     return NextResponse.json({ ok: true, latencyMs: Date.now() - started }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     const raw = redactSecrets(error instanceof Error ? error.message : '连接检测失败。');

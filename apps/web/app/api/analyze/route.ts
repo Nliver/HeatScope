@@ -1,15 +1,17 @@
 import { promises as dns } from 'node:dns';
 import net from 'node:net';
 import { NextResponse } from 'next/server';
+import { buildProviderRequest, extractProviderText, isProviderProtocol } from '../../../lib/model-protocol';
+import type { ProviderProtocol } from '../../../lib/model-protocol';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-type Model = { id: string; name: string; baseUrl: string; model: string; protocol: 'responses' | 'chat_completions'; apiKey: string; reasoningEffort?: string; timeoutSeconds?: number };
+type Model = { id: string; name: string; baseUrl: string; model: string; protocol: ProviderProtocol; apiKey: string; reasoningEffort?: string; timeoutSeconds?: number };
 type Mode = 'analysis' | 'design' | 'html' | 'knowledge';
 type ErrorReason = 'RATE_LIMIT' | 'QUOTA_EXCEEDED' | 'AUTH_ERROR' | 'CONTENT_FILTER' | 'MODEL_NOT_SUPPORT' | 'TIMEOUT' | 'STREAM_INTERRUPTED' | 'INVALID_HTML' | 'UPSTREAM_ERROR' | 'UNKNOWN';
-type ProviderError = { provider: string; code?: string; httpStatus?: number; reason: ErrorReason; message: string; raw?: string; retryable: boolean; retryAfterMs?: number; occurredAt: string };
+type ProviderError = { provider: string; protocol?: ProviderProtocol; code?: string; httpStatus?: number; reason: ErrorReason; message: string; raw?: string; retryable: boolean; retryAfterMs?: number; occurredAt: string };
 
 const privateIPv4 = (ip: string) => /^(10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(ip);
 function privateIPv6(ip: string) { const value = ip.toLowerCase(); return value === '::1' || value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe80:'); }
@@ -57,6 +59,7 @@ function normalizeProviderError(model: Model, input: { message?: string; raw?: s
   const retryable = !['AUTH_ERROR', 'CONTENT_FILTER', 'MODEL_NOT_SUPPORT', 'QUOTA_EXCEEDED'].includes(reason);
   return {
     provider: providerLabel(model),
+    protocol: model.protocol,
     ...(input.code ? { code: asString(input.code, 120) } : {}),
     ...(input.httpStatus ? { httpStatus: input.httpStatus } : {}),
     reason,
@@ -81,19 +84,6 @@ async function assertPublicEndpoint(raw: string) {
   return url;
 }
 
-function apiRoot(url: URL) {
-  const base = url.toString().replace(/\/$/, '');
-  return /\/v\d+$/i.test(url.pathname) ? base : `${base}/v1`;
-}
-function extractText(payload: unknown): string {
-  const body = payload as { output_text?: unknown; choices?: Array<{ message?: { content?: unknown } }>; output?: Array<{ content?: Array<{ text?: unknown }> }> };
-  if (typeof body?.output_text === 'string') return body.output_text;
-  const chat = body?.choices?.[0]?.message?.content;
-  if (typeof chat === 'string') return chat;
-  if (Array.isArray(chat)) return chat.map((item) => typeof item === 'object' && item ? String((item as { text?: unknown }).text || '') : '').join('');
-  if (Array.isArray(body?.output)) return body.output.flatMap((item) => item.content || []).map((item) => String(item.text || '')).join('');
-  return '';
-}
 function stripCodeFence(text: string) {
   return text.trim().replace(/^\uFEFF/, '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
 }
@@ -492,29 +482,23 @@ async function runModel(mode: Mode, model: Model, evidence: unknown, local: unkn
   try {
     if (!model.apiKey || !model.model || !model.name) throw new Error('模型名称、模型 ID 和 API Key 均为必填。');
     const endpoint = await assertPublicEndpoint(model.baseUrl);
-    const root = apiRoot(endpoint);
     const rawEvidence = asRecord(evidence);
     const imageUrl = typeof rawEvidence.heatmapDataUrl === 'string' && rawEvidence.heatmapDataUrl.startsWith('data:image/') ? rawEvidence.heatmapDataUrl : undefined;
     const { heatmapDataUrl: _image, ...promptEvidence } = rawEvidence;
     const prompt = mode === 'design' ? promptForGrowthDesign(promptEvidence, local, feedback) : mode === 'html' ? promptForHtmlDesign(promptEvidence, promptText, feedback) : mode === 'knowledge' ? promptForKnowledge(knowledgeInput, feedback) : promptForAnalysis(promptEvidence, local, knowledge);
     const systemPrompt = mode === 'design' ? DESIGN_SYSTEM_PROMPT : mode === 'html' ? '你只输出完整可运行的纯前端 HTML，不输出 JSON、Markdown 或解释。' : mode === 'knowledge' ? '你只输出符合知识库 JSON schema 的运营方法论。' : '你只输出符合要求的分析 JSON。';
-    const responsesContent = imageUrl ? [{ type: 'input_text', text: prompt }, { type: 'input_image', image_url: imageUrl }] : [{ type: 'input_text', text: prompt }];
-    const chatContent = imageUrl ? [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: imageUrl } }] : prompt;
-    const body = model.protocol === 'responses'
-      ? { model: model.model, input: [{ role: 'system', content: [{ type: 'input_text', text: systemPrompt }] }, { role: 'user', content: responsesContent }], reasoning: model.reasoningEffort ? { effort: model.reasoningEffort } : undefined, max_output_tokens: mode === 'html' ? 12000 : mode === 'design' ? 8000 : 5000 }
-      : { model: model.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: chatContent }], temperature: 0.2, ...(mode === 'html' ? {} : { response_format: { type: 'json_object' } }), max_tokens: mode === 'html' ? 12000 : mode === 'design' ? 8000 : 5000 };
-    const path = model.protocol === 'responses' ? '/responses' : '/chat/completions';
+    const request = buildProviderRequest(model, { systemPrompt, prompt, imageUrl, maxTokens: mode === 'html' ? 12000 : mode === 'design' ? 8000 : 5000, temperature: 0.2, jsonOutput: mode !== 'html' });
     const timeoutSeconds = Math.min(300, Math.max(30, Number(model.timeoutSeconds) || 180));
-    const response = await fetch(`${root}${path}`, { method: 'POST', headers: { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(timeoutSeconds * 1000) });
+    const response = await fetch(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(request.body), redirect: 'error', signal: AbortSignal.timeout(timeoutSeconds * 1000) });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       const payloadRecord = asRecord(payload);
       const providerPayload = asRecord(payloadRecord.error);
       const raw = asString(providerPayload.message || payloadRecord.message || JSON.stringify(payload) || `供应商返回 HTTP ${response.status}`, 2048);
       const retryAfter = Number(response.headers.get('retry-after') || 0);
-      return { modelId: model.id, modelName: model.name, status: 'failed' as const, latencyMs: Date.now() - started, error: normalizeProviderError(model, { message: raw, raw, code: asString(providerPayload.code, 120), httpStatus: response.status, retryAfterMs: retryAfter > 0 ? retryAfter * 1000 : undefined }) };
+      return { modelId: model.id, modelName: model.name, status: 'failed' as const, latencyMs: Date.now() - started, error: normalizeProviderError(model, { message: raw, raw, code: asString(providerPayload.code || providerPayload.type, 120), httpStatus: response.status, retryAfterMs: retryAfter > 0 ? retryAfter * 1000 : undefined }) };
     }
-    const text = extractText(payload);
+    const text = extractProviderText(payload, model.protocol);
     if (mode === 'html') {
       const brandColor = designText(promptEvidence.brandColor, '#0A9C8A');
       const output = parseHtmlOutput(text, brandColor);
@@ -542,7 +526,10 @@ export async function POST(request: Request) {
     const body = await request.json() as { mode?: Mode; evidence?: unknown; local?: unknown; feedback?: unknown; prompt?: unknown; models?: unknown; knowledgeInput?: unknown; knowledge?: unknown[] };
     const mode = body.mode === 'design' ? 'design' : body.mode === 'html' ? 'html' : body.mode === 'knowledge' ? 'knowledge' : 'analysis';
     if ((mode !== 'knowledge' && !body.evidence) || (mode === 'design' && !body.local) || !Array.isArray(body.models)) return NextResponse.json({ error: '缺少分析证据或模型配置。' }, { status: 400 });
-    const models = body.models.slice(0, 4).map((item) => item as Model).filter((item) => item && typeof item.baseUrl === 'string');
+    const models = body.models.slice(0, 4).map((item) => {
+      const model = item as Model;
+      return { ...model, protocol: isProviderProtocol(model.protocol) ? model.protocol : 'responses' };
+    }).filter((item) => item && typeof item.baseUrl === 'string');
     if (!models.length) return NextResponse.json({ error: '请至少配置一个可用模型。' }, { status: 400 });
     const results = await Promise.all(models.map((model) => runModel(mode, model, body.evidence || {}, body.local, body.feedback, body.prompt, body.knowledgeInput, body.knowledge)));
     return NextResponse.json({ results }, { headers: { 'Cache-Control': 'no-store' } });

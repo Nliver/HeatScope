@@ -1,8 +1,9 @@
 import type { ElementRecord, ImportedClicks } from './csv';
+import type { ProviderProtocol } from './model-protocol';
 
 export type Goal = '注册/试用' | '购买/询价' | '内容消费' | '活动领取' | '自定义关键动作';
 export type Audience = '2B' | '2C' | '2G';
-export type ProviderProtocol = 'responses' | 'chat_completions';
+export type { ProviderProtocol } from './model-protocol';
 export type BrandTone = 'teal' | 'warm' | 'slate';
 export type ModelConfig = {
   id: string;
@@ -112,8 +113,8 @@ export type GeneratedPageDesign = {
   sourceModelId?: string;
 };
 export type LocalAnalysis = { dataLevel: 'L1 点击观察' | 'L2 页面效率'; quality: number; warnings: string[]; insights: Insight[]; blueprint: Blueprint; evidenceHash: string };
-export type ModelResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; insights: Insight[]; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
-export type ModelAnalysisProgress = { modelId: string; modelName: string; status: 'queued' | 'running' | 'success' | 'failed'; latencyMs?: number; error?: ProviderError | string };
+export type ModelResult = { modelId: string; modelName: string; protocol?: ProviderProtocol; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; insights: Insight[]; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
+export type ModelAnalysisProgress = { modelId: string; modelName: string; protocol?: ProviderProtocol; status: 'queued' | 'running' | 'success' | 'failed'; latencyMs?: number; error?: ProviderError | string };
 export type PageDesignResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; design?: GeneratedPageDesign; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
 export type ErrorReason =
   | 'RATE_LIMIT'
@@ -136,6 +137,7 @@ export type ProviderError = {
   retryable: boolean;
   retryAfterMs?: number;
   occurredAt: string;
+  protocol?: ProviderProtocol;
 };
 export type HtmlDesignResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; html: string; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
 export type KnowledgeSynthesisResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; principles: Array<{ id?: string; category?: string; severity?: 'P0' | 'P1' | 'P2'; title: string; principle?: string; evidence?: string; action?: string; validation?: string; guardrail?: string; tags?: string[] }>; parseMode?: 'strict' | 'raw' }; error?: ProviderError | string };
@@ -307,22 +309,24 @@ export async function runLocalAnalysis(evidence: Evidence): Promise<LocalAnalysi
   return { dataLevel: behavior.pagePv || behavior.pageUv ? 'L2 页面效率' : 'L1 点击观察', quality, warnings: behavior.warnings, insights, blueprint: defaultBlueprint(evidence), evidenceHash: await evidenceHash(evidence) };
 }
 
-export async function runModelAnalysis(evidence: Evidence, models: ModelConfig[], local?: LocalAnalysis, onProgress?: (progress: ModelAnalysisProgress) => void, knowledge: unknown[] = []): Promise<ModelResult[]> {
+export async function runModelAnalysis(evidence: Evidence, models: ModelConfig[], local?: LocalAnalysis, onProgress?: (progress: ModelAnalysisProgress) => void, onResult?: (result: ModelResult) => void, knowledge: unknown[] = []): Promise<ModelResult[]> {
   const available = models.filter((model) => model.enabled && model.apiKey.trim() && model.connectionStatus === 'success');
   return Promise.all(available.map(async (model) => {
     const started = Date.now();
-    onProgress?.({ modelId: model.id, modelName: model.name, status: 'running' });
+    onProgress?.({ modelId: model.id, modelName: model.name, protocol: model.protocol, status: 'running' });
     try {
       const response = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'analysis', evidence, local, knowledge, models: [model] }) });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || `模型分析请求失败 (${response.status})`);
       const result = body?.results?.[0] as ModelResult | undefined;
-      const resolved = result || { modelId: model.id, modelName: model.name, status: 'failed' as const, latencyMs: Date.now() - started, error: '模型没有返回分析结果。' };
-      onProgress?.({ modelId: model.id, modelName: model.name, status: resolved.status, latencyMs: resolved.latencyMs || Date.now() - started, error: resolved.error });
+      const resolved = result ? { ...result, protocol: model.protocol } : { modelId: model.id, modelName: model.name, protocol: model.protocol, status: 'failed' as const, latencyMs: Date.now() - started, error: '模型没有返回分析结果。' };
+      onResult?.(resolved);
+      onProgress?.({ modelId: model.id, modelName: model.name, protocol: model.protocol, status: resolved.status, latencyMs: resolved.latencyMs || Date.now() - started, error: resolved.error });
       return resolved;
     } catch (error) {
-      const failed: ModelResult = { modelId: model.id, modelName: model.name, status: 'failed', latencyMs: Date.now() - started, error: error instanceof Error ? error.message : '模型分析请求失败。' };
-      onProgress?.({ modelId: model.id, modelName: model.name, status: 'failed', latencyMs: failed.latencyMs, error: failed.error });
+      const failed: ModelResult = { modelId: model.id, modelName: model.name, protocol: model.protocol, status: 'failed', latencyMs: Date.now() - started, error: error instanceof Error ? error.message : '模型分析请求失败。' };
+      onResult?.(failed);
+      onProgress?.({ modelId: model.id, modelName: model.name, protocol: model.protocol, status: 'failed', latencyMs: failed.latencyMs, error: failed.error });
       return failed;
     }
   }));

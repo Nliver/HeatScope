@@ -3609,6 +3609,27 @@
 .analysis-track-grid article.failed { border-color: #E9B9AE; background: #FFF7F4; }
 .analysis-track-grid article.failed > span { color: #B85545; }
 
+.analysis-progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 20px 0;
+  color: var(--color-text-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.analysis-progress-summary span {
+  padding: 4px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: #F7FAFC;
+}
+
+.analysis-progress-summary .is-running { color: #14786C; border-color: #B7D5D0; background: #F2FAF8; }
+.analysis-progress-summary .is-success { color: #14786C; border-color: rgba(10, 156, 138, .42); background: #F1FAF7; }
+.analysis-progress-summary .is-failed { color: #B85545; border-color: #E9B9AE; background: #FFF7F4; }
+
 .composed-prompt-preview {
   overflow: hidden;
   border: 1px solid #CFE3DF;
@@ -3721,6 +3742,7 @@
   .console-task-view .studio-tab.locked b { background: #F0F3F6; }
   .console-task-view .studio-tab.complete b { color: #FFFFFF !important; font-size: 0; }
   .analysis-track-grid { grid-template-columns: 1fr; padding-inline: 14px; }
+  .analysis-progress-summary { padding-inline: 14px; }
   .prompt-composer-head,
   .composed-prompt-preview > div,
   .optimization-diff-list > header { align-items: flex-start; flex-direction: column; }
