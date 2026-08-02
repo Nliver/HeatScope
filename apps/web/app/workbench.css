@@ -2533,25 +2533,11 @@
   gap: 16px;
 }
 
-.html-generation-head {
+.html-generation-status {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-}
-
-.html-generation-head h2 {
-  margin: 6px 0 8px;
-  color: var(--color-text-1);
-  font-size: 24px;
-}
-
-.html-generation-head p {
-  max-width: 760px;
-  margin: 0;
-  color: var(--color-text-2);
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 .html-generation-count {
@@ -2687,10 +2673,8 @@
 .html-result-disclosure .html-generation-meta { border-left: 0; }
 
 @media (max-width: 720px) {
-  .ui-generation-actions,
-  .html-generation-head { align-items: flex-start; flex-direction: column; }
+  .ui-generation-actions { align-items: flex-start; flex-direction: column; }
   .ui-generation-actions .compact-action { width: 100%; justify-content: center; }
-  .html-generation-head h2 { font-size: 22px; }
   .raw-html-preview-card iframe { height: 620px; }
 }
 
@@ -4956,7 +4940,6 @@
 
 /* Title-row hints stay beside their heading instead of creating a new text line. */
 .canvas-header > div:first-child,
-.html-generation-head > div:first-child,
 .selection-empty > div:first-child,
 .growth-evidence-chain > header > div:first-child,
 .generation-copy,
@@ -4968,7 +4951,6 @@
 }
 
 .canvas-header > div:first-child > .info-hint,
-.html-generation-head > div:first-child > .info-hint,
 .selection-empty > div:first-child > .info-hint,
 .growth-evidence-chain > header > div:first-child > .info-hint,
 .generation-copy > .info-hint,
@@ -4981,7 +4963,6 @@
 }
 
 .canvas-header > div:first-child > .info-hint .info-hint-content,
-.html-generation-head > div:first-child > .info-hint .info-hint-content,
 .selection-empty > div:first-child > .info-hint .info-hint-content,
 .growth-evidence-chain > header > div:first-child > .info-hint .info-hint-content,
 .generation-copy > .info-hint .info-hint-content,

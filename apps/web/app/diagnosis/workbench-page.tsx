@@ -537,10 +537,9 @@ function GeneratedHtmlPreview({ results, jobs, activeModelId, onSelectModel, onR
   const failedCount = jobs.filter((job) => job.status === 'failed' || job.status === 'timeout').length;
 
   return <section className="html-generation-result" aria-label="模型生成的 HTML 页面">
-    <header className="html-generation-head">
-      <div><span className="canvas-eyebrow">Step 3 · Raw HTML</span><h2>模型返回的独立页面</h2><InfoHint label="结果处理说明">每个模型的 HTML 单独保存，可切换对比；失败任务的服务商原因和单点重试也在这里处理。</InfoHint></div>
+    <div className="html-generation-status" role="status" aria-live="polite">
       <span className="html-generation-count">{succeededCount} 个可预览{failedCount ? ` · ${failedCount} 个失败` : ''}</span>
-    </header>
+    </div>
     <div className="html-model-tabs" role="tablist" aria-label="切换模型生成结果">
       {modelIds.map((modelId) => {
         const item = results.find((result) => result.modelId === modelId);
@@ -1185,10 +1184,8 @@ export default function Page() {
       return;
     }
     if (step === 1) {
-      setPageDesign(undefined);
-      setHtmlDesigns([]);
-      setHtmlJobs([]);
-      setActiveHtmlModelId('');
+      // Returning from Step 3 to Step 2 keeps generated jobs and results available.
+      // Only the later review state is no longer applicable while editing generation.
       setAfterBehavior(undefined);
       return;
     }
@@ -1203,7 +1200,7 @@ export default function Page() {
     if (step < currentStep) {
       resetAfterStep(step);
       setCurrentStep(step);
-      nudgeMobile('已回退编辑，后续步骤和生成结果已重置。');
+      nudgeMobile('已返回上一步，已有生成结果继续保留。');
     }
   }
   function jumpTo(id: string) {
