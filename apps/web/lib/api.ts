@@ -19,6 +19,27 @@ export type ModelConfig = {
   connectionError?: string;
   connectionLatencyMs?: number;
 };
+
+class ClientRequestTimeoutError extends Error {
+  constructor(seconds: number) {
+    super(`模型请求超过 ${seconds} 秒未返回。`);
+    this.name = 'TimeoutError';
+  }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutSeconds: number): Promise<Response> {
+  const seconds = Math.min(300, Math.max(30, Number(timeoutSeconds) || 180));
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), seconds * 1000);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new ClientRequestTimeoutError(seconds);
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 export type Evidence = {
   url: string;
   goal: Goal;
@@ -340,7 +361,7 @@ export async function runModelPageDesign(evidence: Evidence, local: LocalAnalysi
 }
 
 export async function runModelHtmlDesign(evidence: Evidence, prompt: string, model: ModelConfig, feedback?: ModelResult): Promise<HtmlDesignResult> {
-  const response = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'html', evidence, prompt, feedback, models: [model] }) });
+  const response = await fetchWithTimeout('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'html', evidence, prompt, feedback, models: [model] }) }, model.timeoutSeconds);
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(body?.error || `HTML 页面生成失败 (${response.status})`);
   return body.results?.[0] as HtmlDesignResult;

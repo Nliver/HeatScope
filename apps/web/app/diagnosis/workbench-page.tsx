@@ -40,8 +40,9 @@ function providerErrorMeta(error: ProviderError | string | undefined) {
   return [error.provider, error.reason, error.code, error.httpStatus ? `HTTP ${error.httpStatus}` : ''].filter(Boolean).join(' · ');
 }
 function clientProviderError(model: ModelConfig, reason: unknown): ProviderError {
-  const message = errorMessage(reason);
-  return { provider: model.name || '模型服务商', reason: 'UNKNOWN', message, raw: message, retryable: true, occurredAt: new Date().toISOString() };
+  const timeout = reason instanceof Error && (reason.name === 'TimeoutError' || /timeout|timed out|超过 .* 秒未返回/i.test(reason.message));
+  const message = timeout ? `模型在 ${model.timeoutSeconds} 秒内未返回 HTML，请重新测试该模型。` : errorMessage(reason);
+  return { provider: model.name || '模型服务商', reason: timeout ? 'TIMEOUT' : 'UNKNOWN', message, raw: message, retryable: true, occurredAt: new Date().toISOString() };
 }
 function htmlJobStatus(result: HtmlDesignResult): HtmlGenerationJob['status'] {
   if (result.status === 'success' && result.output?.html) return 'success';
@@ -1080,7 +1081,16 @@ export default function Page() {
     setHtmlDesigns(workspace.htmlDesigns || []);
     setSelectedHtmlModelIds(workspace.selectedHtmlModelIds || []);
     setActiveHtmlModelId(workspace.activeHtmlModelId || '');
-    setHtmlJobs((workspace.htmlJobs || []).map((job) => ({ ...job, jobId: job.jobId || safeId(), attempts: job.attempts || 1, status: job.status === 'success' || job.status === 'failed' || job.status === 'running' || job.status === 'streaming' || job.status === 'timeout' || job.status === 'cancelled' ? job.status : 'queued' })));
+    const restoredHtmlJobs = (workspace.htmlJobs || []).map((job) => {
+      const restoredResult = (workspace.htmlDesigns || []).find((item) => item.modelId === job.modelId && item.status === 'success' && item.output?.html);
+      if (restoredResult) return { ...job, jobId: job.jobId || safeId(), attempts: job.attempts || 1, status: 'success' as const, html: restoredResult.output?.html, error: undefined, finishedAt: job.finishedAt || new Date().toISOString() };
+      const normalizedStatus = job.status === 'success' || job.status === 'failed' || job.status === 'timeout' || job.status === 'cancelled' ? job.status : 'failed';
+      if (normalizedStatus !== 'failed' || job.status === 'failed') return { ...job, jobId: job.jobId || safeId(), attempts: job.attempts || 1, status: normalizedStatus };
+      const model = (workspace.models || []).find((item) => item.id === job.modelId);
+      const staleMessage = '页面刷新后原 HTML 请求已失效，未收到结果，请在第 3 步重新测试该模型。';
+      return { ...job, jobId: job.jobId || safeId(), attempts: job.attempts || 1, status: 'failed' as const, finishedAt: new Date().toISOString(), error: { provider: model?.name || job.modelName || '模型服务商', reason: 'UNKNOWN' as const, message: staleMessage, raw: staleMessage, retryable: true, occurredAt: new Date().toISOString() } };
+    });
+    setHtmlJobs(restoredHtmlJobs);
     setHeatmapCoordinates(workspace.heatmapCoordinates || {});
     setAfterBehavior(workspace.afterBehavior);
     setEvidenceConfirmed(Boolean(workspace.evidenceConfirmed || workspace.local || workspace.selectedPageDesign || workspace.htmlDesigns?.length || workspace.afterBehavior || (workspace.results?.length || 0) > 0));
