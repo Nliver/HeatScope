@@ -112,9 +112,9 @@ export type GeneratedPageDesign = {
   sourceModelId?: string;
 };
 export type LocalAnalysis = { dataLevel: 'L1 点击观察' | 'L2 页面效率'; quality: number; warnings: string[]; insights: Insight[]; blueprint: Blueprint; evidenceHash: string };
-export type ModelResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; insights: Insight[]; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: string };
-export type ModelAnalysisProgress = { modelId: string; modelName: string; status: 'queued' | 'running' | 'success' | 'failed'; latencyMs?: number; error?: string };
-export type PageDesignResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; design?: GeneratedPageDesign; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: string };
+export type ModelResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; insights: Insight[]; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
+export type ModelAnalysisProgress = { modelId: string; modelName: string; status: 'queued' | 'running' | 'success' | 'failed'; latencyMs?: number; error?: ProviderError | string };
+export type PageDesignResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; design?: GeneratedPageDesign; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
 export type ErrorReason =
   | 'RATE_LIMIT'
   | 'QUOTA_EXCEEDED'
@@ -138,7 +138,18 @@ export type ProviderError = {
   occurredAt: string;
 };
 export type HtmlDesignResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; html: string; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
-export type KnowledgeSynthesisResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; principles: Array<{ id?: string; category?: string; severity?: 'P0' | 'P1' | 'P2'; title: string; principle?: string; evidence?: string; action?: string; validation?: string; guardrail?: string; tags?: string[] }>; parseMode?: 'strict' | 'raw' }; error?: string };
+export type KnowledgeSynthesisResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; principles: Array<{ id?: string; category?: string; severity?: 'P0' | 'P1' | 'P2'; title: string; principle?: string; evidence?: string; action?: string; validation?: string; guardrail?: string; tags?: string[] }>; parseMode?: 'strict' | 'raw' }; error?: ProviderError | string };
+
+/** Convert legacy string errors and structured provider errors into safe UI text. */
+export function formatProviderError(error: unknown, fallback = '模型调用失败，请查看模型配置或稍后重试。'): string {
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return fallback;
+}
 
 const format = new Intl.NumberFormat('zh-CN');
 const ctaPattern = /登录|注册|试用|体验|购买|咨询|获取|开始|提交|领取|开通|订阅|报价|apikey|api\s*key/i;

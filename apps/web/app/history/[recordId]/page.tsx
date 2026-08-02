@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { readHistoryRecords, updateReviewConclusion, type HistoryRecord, type ReviewConclusion } from '../../../lib/history';
+import { formatProviderError } from '../../../lib/api';
 import { ConsoleShell } from '../../console-shell';
 import { neutralizePreviewHtml } from '../../../lib/html-preview';
 import { useHistoryRecordReuse } from '../history-reuse-controller';
@@ -98,7 +99,7 @@ export default function HistoryRecordPage() {
     <section className="history-detail-section" id="snapshot-models">
       <header><div><span>03</span><h2>模型分析结果</h2></div><small>只读结果组件</small></header>
       {record.modelOutputs.length ? <><div className="history-model-tabs" role="tablist">{record.modelOutputs.map((result) => <button type="button" role="tab" aria-selected={activeModel?.modelId === result.modelId} className={activeModel?.modelId === result.modelId ? 'active' : ''} key={result.modelId} onClick={() => setActiveModelId(result.modelId)}><b>{result.modelName}</b><small>{result.status === 'success' ? `${result.latencyMs}ms` : '调用失败'}</small></button>)}</div>
-        {activeModel && <article className="history-model-result"><header><div><b>{activeModel.modelName}</b><span>{activeModel.status === 'success' ? '分析完成' : '调用失败'}</span></div><p>{activeModel.output?.summary || activeModel.error || '无结构化结果'}</p></header><div>{activeModel.output?.insights?.map((insight, index) => <section key={`${activeModel.modelId}-${insight.id || index}`}><span>{insight.priority}</span><div><h3>{insight.title}</h3><p>{insight.action}</p><small>依据：{insight.evidence.join('；')}</small></div></section>)}</div></article>}
+        {activeModel && <article className="history-model-result"><header><div><b>{activeModel.modelName}</b><span>{activeModel.status === 'success' ? '分析完成' : '调用失败'}</span></div><p>{activeModel.output?.summary || formatProviderError(activeModel.error, '无结构化结果')}</p></header><div>{activeModel.output?.insights?.map((insight, index) => <section key={`${activeModel.modelId}-${insight.id || index}`}><span>{insight.priority}</span><div><h3>{insight.title}</h3><p>{insight.action}</p><small>依据：{insight.evidence.join('；')}</small></div></section>)}</div></article>}
       </> : <p className="history-section-empty">无模型输出</p>}
     </section>
 

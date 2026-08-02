@@ -5,7 +5,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { usePathname, useRouter } from 'next/navigation';
 import { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import { parseBehaviorFile, type ElementRecord, type ImportedClicks } from '../../lib/csv';
-import { runLocalAnalysis, runModelAnalysis, runModelHtmlDesign, runModelPageDesign, testModelConnection, type Audience, type Blueprint, type Evidence, type GeneratedPageDesign, type Goal, type HtmlDesignResult, type Insight, type LocalAnalysis, type ModelAnalysisProgress, type ModelConfig, type ModelResult, type PageArchetype, type PageBaseline, type PageDesignSection, type ProviderError } from '../../lib/api';
+import { formatProviderError, runLocalAnalysis, runModelAnalysis, runModelHtmlDesign, runModelPageDesign, testModelConnection, type Audience, type Blueprint, type Evidence, type GeneratedPageDesign, type Goal, type HtmlDesignResult, type Insight, type LocalAnalysis, type ModelAnalysisProgress, type ModelConfig, type ModelResult, type PageArchetype, type PageBaseline, type PageDesignSection, type ProviderError } from '../../lib/api';
 import { isFrozenHistoryRecord, isHistoryQuotaError, readHistoryRecords, withDiagnosisChecksum, writeHistoryRecords, WORKSPACE_STORAGE_KEY, type EvidenceRef, type HistoryRecord, type HistoryStatus } from '../../lib/history';
 import { ConsoleFooter, ConsoleSidebar, ConsoleTopbar, consoleRouteByView, consoleViewFromPathname, type ConsoleView } from '../console-shell';
 import { neutralizePreviewHtml } from '../../lib/html-preview';
@@ -30,11 +30,8 @@ const demoEntries = [
   { id: 'activity', name: '春季活动页', goal: '活动领取', summary: '演示活动聚合页如何做分流、权益表达和 CTA 归因。', heatmap: '活动页热力图' },
 ] as const;
 
-function errorMessage(error: unknown) { return error instanceof Error ? error.message : '操作失败，请稍后重试。'; }
-function providerErrorMessage(error: ProviderError | string | undefined) {
-  if (!error) return '模型调用失败，请查看模型配置或稍后重试。';
-  return typeof error === 'string' ? error : error.message;
-}
+function errorMessage(error: unknown) { return formatProviderError(error, '操作失败，请稍后重试。'); }
+function providerErrorMessage(error: ProviderError | string | undefined) { return formatProviderError(error); }
 function providerErrorRaw(error: ProviderError | string | undefined) { return typeof error === 'string' ? error : error?.raw; }
 function providerErrorRetryable(error: ProviderError | string | undefined) { return typeof error === 'object' && error ? error.retryable : true; }
 function providerErrorMeta(error: ProviderError | string | undefined) {
@@ -73,6 +70,16 @@ async function compactHeatmapForModel(file: File): Promise<string | undefined> {
     return dataUrl.length <= 2_500_000 ? dataUrl : undefined;
   } finally { URL.revokeObjectURL(source); }
 }
+async function compactHeatmapForPreview(file: File): Promise<string> {
+  const source = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => { const target = new Image(); target.onload = () => resolve(target); target.onerror = reject; target.src = source; });
+    const scale = Math.min(1, 1200 / image.naturalWidth); const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.62);
+  } finally { URL.revokeObjectURL(source); }
+}
 function download(name: string, contents: string, type = 'text/markdown;charset=utf-8') { const url = URL.createObjectURL(new Blob([contents], { type })); const link = document.createElement('a'); link.href = url; link.download = name; link.click(); URL.revokeObjectURL(url); }
 function topHotspots(evidence: Evidence) { return evidence.behavior.elements.filter((item) => item.kind !== '导航').slice(0, 4); }
 function ctaShare(evidence: Evidence) {
@@ -83,6 +90,7 @@ function ctaShare(evidence: Evidence) {
 }
 
 const WORKSPACE_SAFE_LIMIT = 3_800_000;
+const WORKSPACE_HEATMAP_CACHE_KEY = `${WORKSPACE_STORAGE_KEY}:heatmap-preview`;
 const DEFAULT_UI_PROMPT = '请按该页面的营销转化数据主次以及用户基础习惯重新调整页面结构和各模块内容，同时充分考虑 2B 用户审美习惯和当前品牌主色调，对页面 UI 进行升级。';
 const wizardStepIds = ['input', 'analysis', 'output', 'review'] as const;
 type WizardStepIndex = 0 | 1 | 2 | 3;
@@ -129,6 +137,7 @@ type PersistedWorkspace = {
   behavior?: ImportedClicks;
   heatmapName: string;
   heatmapDataUrl: string;
+  heatmapPreviewUrl?: string;
   includeHeatmapInModel: boolean;
   markedCtas: string[];
   models: ModelConfig[];
@@ -172,15 +181,24 @@ function readWorkspace(): PersistedWorkspace | undefined {
   }
 }
 
+function readHeatmapPreviewCache() {
+  if (typeof window === 'undefined') return '';
+  try { return window.localStorage.getItem(WORKSPACE_HEATMAP_CACHE_KEY) || ''; } catch { return ''; }
+}
+
 function safeWriteWorkspace(workspace: PersistedWorkspace) {
   if (typeof window === 'undefined') return;
   const write = (value: PersistedWorkspace) => window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(value));
   try {
+    if (workspace.heatmapPreviewUrl) window.localStorage.setItem(WORKSPACE_HEATMAP_CACHE_KEY, workspace.heatmapPreviewUrl);
+    else window.localStorage.removeItem(WORKSPACE_HEATMAP_CACHE_KEY);
+  } catch { /* workspace persistence remains best effort */ }
+  try {
     const payload = JSON.stringify(workspace);
     if (payload.length <= WORKSPACE_SAFE_LIMIT) { write(workspace); return; }
-    write({ ...workspace, behavior: undefined, afterBehavior: undefined, heatmapDataUrl: '' });
+    write({ ...workspace, behavior: undefined, afterBehavior: undefined, heatmapDataUrl: '', heatmapPreviewUrl: '' });
   } catch {
-    try { write({ ...workspace, behavior: undefined, afterBehavior: undefined, heatmapDataUrl: '', results: workspace.results.slice(0, 4) }); } catch { /* ignore */ }
+    try { write({ ...workspace, behavior: undefined, afterBehavior: undefined, heatmapDataUrl: '', heatmapPreviewUrl: '', results: workspace.results.slice(0, 4) }); } catch { /* ignore */ }
   }
 }
 
@@ -725,7 +743,7 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
     })() : undefined;
     const modelSources = results.map((result) => {
       const issues = result.output?.insights?.map((insight, index) => issueFromInsight(insight, index, result.modelId)) || [];
-      return { id: result.modelId, type: 'model' as const, name: result.modelName, version: result.status === 'success' ? '结构化分析输出' : '调用失败', tokens: undefined, duration: result.status === 'success' ? `${result.latencyMs}ms` : '未完成', counts: sourceCounts(issues), summary: result.output?.summary || result.error || '该模型没有返回结构化分析摘要。', issues, status: result.status, raw: result.output || result.error, modelId: result.modelId, result };
+      return { id: result.modelId, type: 'model' as const, name: result.modelName, version: result.status === 'success' ? '结构化分析输出' : '调用失败', tokens: undefined, duration: result.status === 'success' ? `${result.latencyMs}ms` : '未完成', counts: sourceCounts(issues), summary: result.output?.summary || formatProviderError(result.error, '该模型没有返回结构化分析摘要。'), issues, status: result.status, raw: result.output || result.error, modelId: result.modelId, result };
     });
     return localSource ? [localSource, ...modelSources] : modelSources;
   }, [local, results]);
@@ -905,7 +923,7 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
           <header className="analysis-detail-sticky"><div><span className={`source-type-badge ${selectedSource.type}`}>{selectedSource.type === 'local' ? '本地规则' : '模型输出'}</span><h4>{selectedSource.name}</h4><p>{selectedSource.version} · {selectedSource.tokens ? `${selectedSource.tokens.toLocaleString()} tokens` : 'tokens 未返回'} · {selectedSource.duration}</p></div><div className="analysis-detail-view-toggle" role="group" aria-label="反馈视图切换"><button type="button" className={detailView === 'findings' ? 'active' : ''} onClick={() => setDetailView('findings')}>结构化反馈</button><button type="button" className={detailView === 'raw' ? 'active' : ''} onClick={() => setDetailView('raw')}>原始结果</button></div></header>
           <div className="analysis-detail-body">
             {detailView === 'raw' ? <pre className="analysis-raw-output">{JSON.stringify(selectedSource.raw, null, 2)}</pre> : <><p className="analysis-detail-summary">{selectedSource.summary}</p><div className="analysis-issue-list">{selectedSource.issues.length ? selectedSource.issues.map((issue) => <article className="analysis-issue-card reveal-item" data-analysis-reveal key={issue.id}><div className="analysis-issue-head"><span className={`severity-label ${issue.severity.toLowerCase()}`}>{issue.severity}</span><h5>{issue.title}</h5></div><div className="analysis-issue-grid"><section><span>现状诊断</span><p>{issue.diagnosis}</p><small>依据：{issue.evidence.join('；')}</small></section><section className="analysis-action-column"><span>建议动作</span><p>{issue.action}</p><mark>关键改动：{issue.actionHighlights.join('；')}</mark></section></div><footer><span>验证：{issue.validation}</span><span>护栏：{issue.guardrail}</span></footer></article>) : <p className="module-empty-copy">该分析源没有结构化问题卡。</p>}</div></>}
-            {selectedSource.type === 'model' && selectedSource.result?.status === 'failed' && <p className="model-feedback-error">{selectedSource.result.error || '模型调用失败。'}</p>}
+            {selectedSource.type === 'model' && selectedSource.result?.status === 'failed' && <p className="model-feedback-error">{formatProviderError(selectedSource.result.error)}</p>}
           </div>
         </article>}
       </div> : <p className="module-empty-copy">待分析</p>}
@@ -926,7 +944,7 @@ export default function Page() {
   const [historyId, setHistoryId] = useState('');
   const [url, setUrl] = useState(''); const [goal, setGoal] = useState<Goal>('注册/试用'); const [device, setDevice] = useState('桌面端'); const [audience, setAudience] = useState<Audience>('2B'); const [brandColor, setBrandColor] = useState('#0A9C8A'); const [brandTone, setBrandTone] = useState('科技、可信、克制'); const [primaryCta, setPrimaryCta] = useState(''); const [notes, setNotes] = useState('');
   const [pageBaseline, setPageBaseline] = useState<PageBaseline>(); const [baselineLoading, setBaselineLoading] = useState(false); const [baselineError, setBaselineError] = useState(''); const [demoLoadingId, setDemoLoadingId] = useState('');
-  const [behavior, setBehavior] = useState<ImportedClicks>(); const [heatmapName, setHeatmapName] = useState(''); const [heatmapUrl, setHeatmapUrl] = useState(''); const [heatmapDataUrl, setHeatmapDataUrl] = useState(''); const [includeHeatmapInModel, setIncludeHeatmapInModel] = useState(true); const [markedCtas, setMarkedCtas] = useState<string[]>([]);
+  const [behavior, setBehavior] = useState<ImportedClicks>(); const [heatmapName, setHeatmapName] = useState(''); const [heatmapUrl, setHeatmapUrl] = useState(''); const [heatmapPreviewUrl, setHeatmapPreviewUrl] = useState(''); const [heatmapDataUrl, setHeatmapDataUrl] = useState(''); const [includeHeatmapInModel, setIncludeHeatmapInModel] = useState(true); const [markedCtas, setMarkedCtas] = useState<string[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]); const [modelDraft, setModelDraft] = useState<{ name: string; baseUrl: string; model: string; protocol: ModelConfig['protocol']; apiKey: string; reasoningEffort: NonNullable<ModelConfig['reasoningEffort']>; timeoutSeconds: number }>({ name: '', baseUrl: 'https://api.openai.com/v1', model: '', protocol: 'responses', apiKey: '', reasoningEffort: 'medium', timeoutSeconds: 180 }); const [showModelForm, setShowModelForm] = useState(false); const [modelDialogOpen, setModelDialogOpen] = useState(false); const [editingModel, setEditingModel] = useState<ModelConfig>();
   const [local, setLocal] = useState<LocalAnalysis>(); const [results, setResults] = useState<ModelResult[]>([]); const [modelProgress, setModelProgress] = useState<ModelAnalysisProgress[]>([]); const [selectedModelId, setSelectedModelId] = useState(''); const [pageDesign, setPageDesign] = useState<GeneratedPageDesign>(); const [uiPrompt, setUiPrompt] = useState(DEFAULT_UI_PROMPT); const [htmlDesigns, setHtmlDesigns] = useState<HtmlDesignResult[]>([]); const [selectedHtmlModelIds, setSelectedHtmlModelIds] = useState<string[]>([]); const [activeHtmlModelId, setActiveHtmlModelId] = useState(''); const [htmlJobs, setHtmlJobs] = useState<HtmlGenerationJob[]>([]); const [heatmapCoordinates, setHeatmapCoordinates] = useState<Record<string, string>>({}); const [htmlGenerating, setHtmlGenerating] = useState(false); const [retryingJobId, setRetryingJobId] = useState(''); const [running, setRunning] = useState(false); const [error, setError] = useState(''); const [modelError, setModelError] = useState(''); const [notice, setNotice] = useState(''); const [afterBehavior, setAfterBehavior] = useState<ImportedClicks>(); const [hydrated, setHydrated] = useState(false); const [generatingModelId, setGeneratingModelId] = useState(''); const [currentStep, setCurrentStep] = useState<WizardStepIndex>(0); const [evidenceConfirmed, setEvidenceConfirmed] = useState(false);
   const wizardHeaderRef = useRef<HTMLDivElement>(null);
@@ -1038,9 +1056,12 @@ export default function Page() {
     setNotes(workspace.notes || '');
     setPageBaseline(workspace.pageBaseline);
     setBehavior(workspace.behavior);
+    const restoredHeatmapDataUrl = workspace.heatmapDataUrl || '';
+    const restoredHeatmapPreviewUrl = workspace.heatmapPreviewUrl || readHeatmapPreviewCache() || restoredHeatmapDataUrl;
     setHeatmapName(workspace.heatmapName || '');
-    setHeatmapDataUrl(workspace.heatmapDataUrl || '');
-    setHeatmapUrl(workspace.heatmapDataUrl || '');
+    setHeatmapPreviewUrl(restoredHeatmapPreviewUrl);
+    setHeatmapDataUrl(restoredHeatmapDataUrl);
+    setHeatmapUrl(restoredHeatmapPreviewUrl);
     setIncludeHeatmapInModel(Boolean(workspace.includeHeatmapInModel));
     setMarkedCtas(workspace.markedCtas || []);
     setModels(workspace.models || []);
@@ -1119,6 +1140,7 @@ export default function Page() {
       behavior,
       heatmapName,
       heatmapDataUrl,
+      heatmapPreviewUrl,
       includeHeatmapInModel,
       markedCtas,
       models,
@@ -1136,7 +1158,7 @@ export default function Page() {
       evidenceConfirmed,
       currentStep,
     });
-  }, [activeHtmlModelId, afterBehavior, audience, behavior, brandColor, brandTone, comparisonBaseline, currentStep, device, draftId, evidenceConfirmed, goal, heatmapCoordinates, heatmapDataUrl, heatmapName, htmlDesigns, htmlJobs, hydrated, includeHeatmapInModel, local, markedCtas, models, notes, pageBaseline, pageDesign, primaryCta, results, selectedHtmlModelIds, selectedModelId, uiPrompt, url]);
+  }, [activeHtmlModelId, afterBehavior, audience, behavior, brandColor, brandTone, comparisonBaseline, currentStep, device, draftId, evidenceConfirmed, goal, heatmapCoordinates, heatmapDataUrl, heatmapName, heatmapPreviewUrl, htmlDesigns, htmlJobs, hydrated, includeHeatmapInModel, local, markedCtas, models, notes, pageBaseline, pageDesign, primaryCta, results, selectedHtmlModelIds, selectedModelId, uiPrompt, url]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1147,7 +1169,7 @@ export default function Page() {
   function resetAnalysis(preserveReview = false) { setLocal(undefined); setResults([]); setModelProgress([]); setSelectedModelId(''); setPageDesign(undefined); setHtmlDesigns([]); setHtmlJobs([]); setSelectedHtmlModelIds([]); setActiveHtmlModelId(''); if (!preserveReview) setAfterBehavior(undefined); }
   function resetCurrentDiagnosis() {
     if (heatmapUrl.startsWith('blob:')) URL.revokeObjectURL(heatmapUrl);
-    setDraftId(''); setComparisonBaseline(undefined); setHistoryId(''); setUrl(''); setGoal('注册/试用'); setDevice('桌面端'); setAudience('2B'); setBrandColor('#0A9C8A'); setBrandTone('科技、可信、克制'); setPrimaryCta(''); setNotes(''); setPageBaseline(undefined); setBaselineError(''); setBehavior(undefined); setHeatmapName(''); setHeatmapUrl(''); setHeatmapDataUrl(''); setIncludeHeatmapInModel(true); setMarkedCtas([]); setHeatmapCoordinates({}); setUiPrompt(DEFAULT_UI_PROMPT); setEvidenceConfirmed(false); resetAnalysis(); setCurrentStep(0); setError(''); setNotice('当前诊断已重置；模型配置、知识库和历史记录均已保留。');
+    setDraftId(''); setComparisonBaseline(undefined); setHistoryId(''); setUrl(''); setGoal('注册/试用'); setDevice('桌面端'); setAudience('2B'); setBrandColor('#0A9C8A'); setBrandTone('科技、可信、克制'); setPrimaryCta(''); setNotes(''); setPageBaseline(undefined); setBaselineError(''); setBehavior(undefined); setHeatmapName(''); setHeatmapUrl(''); setHeatmapPreviewUrl(''); setHeatmapDataUrl(''); setIncludeHeatmapInModel(true); setMarkedCtas([]); setHeatmapCoordinates({}); setUiPrompt(DEFAULT_UI_PROMPT); setEvidenceConfirmed(false); resetAnalysis(); setCurrentStep(0); setError(''); setNotice('当前诊断已重置；模型配置、知识库和历史记录均已保留。');
   }
   function resetAfterStep(step: WizardStepIndex) {
     if (step === 0) {
@@ -1222,10 +1244,10 @@ export default function Page() {
     const file = event.target.files?.[0]; if (!file) return;
     try { const parsed = await parseBehaviorFile(file); if (after) { setAfterBehavior(parsed); setNotice('已导入改版后行为数据。'); } else { setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); setBehavior(parsed); setMarkedCtas(parsed.elements.filter((item) => /注册|试用|体验|购买|咨询|开通|订阅/i.test(item.name)).slice(0, 1).map((item) => item.id)); setHeatmapCoordinates({}); resetAnalysis(); setCurrentStep(0); setNotice('已上传 Web 事件点击数据。'); } setError(''); } catch (reason) { setError(errorMessage(reason)); }
   }
-  async function importHeatmap(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; if (!file.type.startsWith('image/')) { setError('热力图需为 PNG、JPG、WEBP 等图片文件。'); return; } if (heatmapUrl.startsWith('blob:')) URL.revokeObjectURL(heatmapUrl); const dataUrl = await compactHeatmapForModel(file) || ''; setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); resetAnalysis(); setHeatmapCoordinates({}); setCurrentStep(0); setHeatmapName(file.name); setHeatmapUrl(dataUrl || URL.createObjectURL(file)); setHeatmapDataUrl(dataUrl); setError(''); setNotice('已上传热力图截图。'); }
+  async function importHeatmap(event: ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; if (!file.type.startsWith('image/')) { setError('热力图需为 PNG、JPG、WEBP 等图片文件。'); return; } if (heatmapUrl.startsWith('blob:')) URL.revokeObjectURL(heatmapUrl); const [dataUrl, previewUrl] = await Promise.all([compactHeatmapForModel(file), compactHeatmapForPreview(file)]); setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); resetAnalysis(); setHeatmapCoordinates({}); setCurrentStep(0); setHeatmapName(file.name); setHeatmapPreviewUrl(previewUrl || dataUrl || ''); setHeatmapUrl(previewUrl || dataUrl || URL.createObjectURL(file)); setHeatmapDataUrl(dataUrl || ''); setError(''); setNotice('已上传热力图截图。'); }
   function clearHeatmap() {
     if (heatmapUrl.startsWith('blob:')) URL.revokeObjectURL(heatmapUrl);
-    setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); setHeatmapName(''); setHeatmapUrl(''); setHeatmapDataUrl(''); setIncludeHeatmapInModel(true); setHeatmapCoordinates({}); resetAnalysis(); setCurrentStep(0); setNotice('已删除热力图及其坐标和生成结果。');
+    setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); setHeatmapName(''); setHeatmapUrl(''); setHeatmapPreviewUrl(''); setHeatmapDataUrl(''); setIncludeHeatmapInModel(true); setHeatmapCoordinates({}); resetAnalysis(); setCurrentStep(0); setNotice('已删除热力图及其坐标和生成结果。');
   }
   function clearBehavior(after = false) {
     if (after) { setAfterBehavior(undefined); setNotice('已删除改版后行为数据。'); return; }
@@ -1237,7 +1259,7 @@ export default function Page() {
       const { loadDemoCase: getDemoCase } = await import('../../lib/demoCases');
       const demo = await getDemoCase(caseId);
       if (heatmapUrl.startsWith('blob:')) URL.revokeObjectURL(heatmapUrl);
-      setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); setUrl(demo.url); setGoal(demo.goal); setDevice(demo.device); setAudience(caseId === 'activity' ? '2C' : '2B'); setBrandColor(caseId === 'activity' ? '#F07A52' : caseId === 'plan' ? '#4C8DFF' : '#0A9C8A'); setBrandTone(caseId === 'activity' ? '明快、直接、有时效感' : '科技、可信、克制'); setPrimaryCta(demo.primaryCta); setNotes(demo.notes); setPageBaseline(demo.baseline); setBehavior(demo.behavior); setMarkedCtas(demo.markedCtaIds); setHeatmapName(demo.heatmapName); setHeatmapUrl(demo.heatmapUrl); setHeatmapDataUrl(''); setIncludeHeatmapInModel(false); setHeatmapCoordinates({}); resetAnalysis(); setCurrentStep(0); setNotice(`${demo.name} 演示案例已导入，请配置并连接模型后继续。`);
+      setDraftId(''); setComparisonBaseline(undefined); setEvidenceConfirmed(false); setUrl(demo.url); setGoal(demo.goal); setDevice(demo.device); setAudience(caseId === 'activity' ? '2C' : '2B'); setBrandColor(caseId === 'activity' ? '#F07A52' : caseId === 'plan' ? '#4C8DFF' : '#0A9C8A'); setBrandTone(caseId === 'activity' ? '明快、直接、有时效感' : '科技、可信、克制'); setPrimaryCta(demo.primaryCta); setNotes(demo.notes); setPageBaseline(demo.baseline); setBehavior(demo.behavior); setMarkedCtas(demo.markedCtaIds); setHeatmapName(demo.heatmapName); setHeatmapPreviewUrl(demo.heatmapUrl); setHeatmapUrl(demo.heatmapUrl); setHeatmapDataUrl(''); setIncludeHeatmapInModel(false); setHeatmapCoordinates({}); resetAnalysis(); setCurrentStep(0); setNotice(`${demo.name} 演示案例已导入，请配置并连接模型后继续。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setDemoLoadingId(''); }
   }
   async function fetchPageBaseline() {
@@ -1282,7 +1304,7 @@ export default function Page() {
     setError('');
     try {
       const generated = await runModelPageDesign(evidence, local, result, model);
-      if (generated.status !== 'success' || !generated.output?.design) throw new Error(generated.error || '模型未返回可用页面设计。');
+      if (generated.status !== 'success' || !generated.output?.design) throw new Error(formatProviderError(generated.error, '模型未返回可用页面设计。'));
       const design = { ...generated.output.design, sourceModel: result.modelName, sourceModelId: result.modelId };
       setSelectedModelId(result.modelId);
       setPageDesign(design);
@@ -1534,7 +1556,7 @@ export default function Page() {
                     <div className="analysis-track-grid" aria-label="本地规则与各模型并行分析进度">
                       <article className={local ? 'complete' : running ? 'running' : ''}><span><Settings2 size={15} /> 轨道 A</span><b>本地规则引擎</b><small>{local ? `${local.insights.length} 条硬约束已命中` : running ? '分析中' : '待启动'}</small></article>
                       {modelProgress.length ? modelProgress.map((item) => <article key={item.modelId} className={item.status === 'success' ? 'complete' : item.status === 'failed' ? 'failed' : item.status === 'running' ? 'running' : ''}>
-                        <span><Sparkles size={15} /> 模型分析</span><b>{item.modelName}</b><small>{item.status === 'queued' ? '排队中' : item.status === 'running' ? '分析中 · 正在等待模型返回' : item.status === 'success' ? `已完成 · ${item.latencyMs || 0}ms` : `调用失败 · ${item.error || '请检查模型配置'}`}</small>
+                        <span><Sparkles size={15} /> 模型分析</span><b>{item.modelName}</b><small>{item.status === 'queued' ? '排队中' : item.status === 'running' ? '分析中 · 正在等待模型返回' : item.status === 'success' ? `已完成 · ${item.latencyMs || 0}ms` : `调用失败 · ${formatProviderError(item.error, '请检查模型配置')}`}</small>
                       </article>) : <article className={running ? 'running' : ''}><span><Sparkles size={15} /> 轨道 B</span><b>尚未配置已连接模型</b><small>{running ? '本地规则运行中' : '待配置'}</small></article>}
                     </div>
                     {heatmapName && <label className="vision-toggle"><input type="checkbox" checked={includeHeatmapInModel} onChange={(event) => changeVisualInput(event.target.checked)} />将热力图作为模型视觉输入</label>}
