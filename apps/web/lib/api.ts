@@ -133,7 +133,9 @@ export type GeneratedPageDesign = {
   sourceModel?: string;
   sourceModelId?: string;
 };
-export type LocalAnalysis = { dataLevel: 'L1 点击观察' | 'L2 页面效率'; quality: number; warnings: string[]; insights: Insight[]; blueprint: Blueprint; evidenceHash: string };
+export type LocalRuleMatch = { ruleId: string; title: string; score: number; signals: string[] };
+export type LocalKnowledgeRule = { id: string; category: string; severity: 'P0' | 'P1' | 'P2'; title: string; principle: string; action: string; validation: string; guardrail: string; tags: string[]; enabled: boolean };
+export type LocalAnalysis = { dataLevel: 'L1 点击观察' | 'L2 页面效率'; quality: number; warnings: string[]; insights: Insight[]; blueprint: Blueprint; evidenceHash: string; ruleMatches?: LocalRuleMatch[] };
 export type ModelResult = { modelId: string; modelName: string; protocol?: ProviderProtocol; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; insights: Insight[]; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
 export type ModelAnalysisProgress = { modelId: string; modelName: string; protocol?: ProviderProtocol; status: 'queued' | 'running' | 'success' | 'failed'; latencyMs?: number; error?: ProviderError | string };
 export type PageDesignResult = { modelId: string; modelName: string; status: 'success' | 'failed'; latencyMs: number; output?: { summary: string; design?: GeneratedPageDesign; parseMode?: 'strict' | 'salvaged' | 'raw' }; error?: ProviderError | string };
@@ -313,21 +315,69 @@ export async function evidenceHash(evidence: Evidence) {
   return Array.from(new Uint8Array(value)).map((item) => item.toString(16).padStart(2, '0')).join('');
 }
 
-export async function runLocalAnalysis(evidence: Evidence): Promise<LocalAnalysis> {
+function localRuleSignals(evidence: Evidence, ctaShare: number, ctaCount: number, top?: ElementRecord) {
+  const archetype = inferArchetype(evidence);
+  const signals = ['数据边界', '复盘', '指标', evidence.goal, evidence.audience, archetype];
+  if (!evidence.behavior.pagePv || !evidence.behavior.pageUv) signals.push('曝光', 'PV/UV', '实验');
+  if (ctaCount) signals.push('CTA', '用户意图', '行动', '漏斗');
+  if (ctaShare < 15) signals.push('首屏', '信息层级', '转化承接');
+  if (ctaCount >= 4) signals.push('竞争', '主路径', '首屏');
+  if (top && top.kind !== 'CTA' && top.share >= 20) signals.push('信息与行动', '就近 CTA', '模块', '高兴趣');
+  if (archetype === 'product') signals.push('产品', '试用', '接入', '激活', '注册', '首次使用');
+  if (archetype === 'pricing') signals.push('套餐', '定价', '选择成本', '购买', '询价');
+  if (archetype === 'campaign') signals.push('活动', '领取', '权益', '时效');
+  if (archetype === 'content') signals.push('内容', '阅读', '资源', '案例');
+  return unique(signals.map((signal) => signal.toLowerCase()));
+}
+
+function matchKnowledgeRules(evidence: Evidence, rules: LocalKnowledgeRule[], signals: string[], ctaShare: number, ctaCount: number, top?: ElementRecord) {
+  const severityWeight = { P0: 3, P1: 2, P2: 1 } as const;
+  const matches = rules.filter((rule) => rule.enabled).map((rule) => {
+    const tags = rule.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+    const category = rule.category.toLowerCase();
+    const body = `${rule.title} ${rule.principle} ${rule.action}`.toLowerCase();
+    const matchedSignals = signals.filter((signal) => tags.some((tag) => tag.includes(signal) || signal.includes(tag)) || category.includes(signal) || body.includes(signal));
+    const tagMatches = matchedSignals.filter((signal) => tags.some((tag) => tag.includes(signal) || signal.includes(tag))).length;
+    const categoryMatches = matchedSignals.filter((signal) => category.includes(signal)).length;
+    const score = tagMatches * 5 + categoryMatches * 3 + Math.min(3, matchedSignals.length) + severityWeight[rule.severity];
+    return { rule, score, signals: unique(matchedSignals) };
+  }).filter((match) => match.score >= 7 && match.signals.length > 0)
+    .sort((a, b) => b.score - a.score || severityWeight[b.rule.severity] - severityWeight[a.rule.severity] || a.rule.title.localeCompare(b.rule.title, 'zh-CN'))
+    .slice(0, 4);
+
+  return matches.map((match) => {
+    const currentEvidence = match.signals.some((signal) => signal.includes('cta') || signal === '行动' || signal === '漏斗')
+      ? `当前识别 ${ctaCount} 个行动元素，核心 CTA 点击份额为 ${ctaShare}%。`
+      : match.signals.some((signal) => signal === '曝光' || signal === 'pv/uv' || signal === '实验' || signal === '数据边界')
+        ? `当前导入 ${evidence.behavior.elements.length} 个元素、${format.format(evidence.behavior.clicks)} 次点击；${evidence.behavior.pagePv && evidence.behavior.pageUv ? '已提供 PV/UV。' : '未同时提供 PV/UV。'}`
+        : top
+          ? `当前最高点击元素为“${top.name}”，占已记录点击 ${top.share}%。`
+          : `当前页面目标为${evidence.goal}，页面原型为${inferArchetype(evidence)}。`;
+    const insight: Insight = { id: `knowledge-${match.rule.id}`, priority: match.rule.severity, title: match.rule.title, evidence: [currentEvidence, `本地规则命中：${match.signals.join('、')}；匹配分 ${match.score}。`], interpretation: match.rule.principle, action: match.rule.action, validation: match.rule.validation, guardrail: match.rule.guardrail };
+    const trace: LocalRuleMatch = { ruleId: match.rule.id, title: match.rule.title, score: match.score, signals: match.signals };
+    return { insight, trace };
+  });
+}
+
+export async function runLocalAnalysis(evidence: Evidence, knowledgeRules: LocalKnowledgeRule[] = []): Promise<LocalAnalysis> {
   const { behavior } = evidence; const marked = behavior.elements.filter((item) => evidence.markedCtaIds.includes(item.id));
-  const ctas = marked.length ? marked : behavior.elements.filter((item) => item.kind === 'CTA' || ctaPattern.test(item.name));
+  const detectedCtas = behavior.elements.filter((item) => item.kind === 'CTA' || ctaPattern.test(item.name));
+  const ctas = marked.length ? marked : detectedCtas;
   const ctaClicks = ctas.reduce((sum, item) => sum + item.clicks, 0);
   const ctaShare = behavior.clicks ? Number((ctaClicks / behavior.clicks * 100).toFixed(1)) : 0;
-  const top = behavior.elements[0]; const duplicateLabels = unique(behavior.elements.filter((item) => behavior.elements.filter((other) => other.name === item.name).length > 1 && !item.module && !item.selector).map((item) => item.name));
+  const top = behavior.elements.reduce<ElementRecord | undefined>((current, item) => !current || item.clicks > current.clicks ? item : current, undefined); const duplicateLabels = unique(behavior.elements.filter((item) => behavior.elements.filter((other) => other.name === item.name).length > 1 && !item.module && !item.selector).map((item) => item.name));
   const insights: Insight[] = [];
   if (duplicateLabels.length) insights.push({ id: 'mapping', priority: 'P0', title: '先补齐同名元素的归因信息', evidence: [`${duplicateLabels.slice(0, 3).join('、')} 出现多次，但缺少模块或选择器。`], interpretation: '当前无法知道具体是哪个页面位置承接了点击，继续按名称汇总会造成伪精确结论。', action: '为每个 CTA 补齐 module_id + cta_type 或唯一 selector，并把导航、工具入口与业务 CTA 分开统计。', validation: 'CTA 可归因率达到 98% 以上后再比较模块表现。', guardrail: '不得把同名 CTA 的总点击直接归因给某一张卡或页面区块。' });
   if (!ctas.length) insights.push({ id: 'cta-missing', priority: 'P0', title: '未确认主 CTA，分析不能判断是否承接核心目标', evidence: ['行为表中没有被标记为主 CTA 的元素。'], interpretation: '页面可能有行动入口，但系统无法区分业务主路径和辅助导航。', action: '选择一个核心业务动作并在表内对应元素标为主 CTA；若不同位置复用 CTA，分别记录位置。', validation: '主 CTA 映射覆盖率为 100%。', guardrail: '没有目标 CTA 时不得输出“主 CTA 表现差”。' });
-  if (ctas.length && ctaShare < 15) insights.push({ id: 'cta-share', priority: 'P1', title: '核心动作在已记录点击中的份额偏低', evidence: [`主 CTA 合计 ${format.format(ctaClicks)} 次，占已记录点击 ${ctaShare}%。`, `最高点击元素为“${top.name}” (${top.share}%)。`], interpretation: '用户注意力可能被内容浏览、导航或辅助入口分流；仅有点击次数时不能解释为点击率或转化流失。', action: '在首屏收敛为一个主 CTA，强化与页面价值的一致性；在高兴趣内容后增加就近、低门槛的同目标 CTA。', validation: '有 PV/UV 后观察主 CTA 点击 UV / 页面 UV；当前先观察主 CTA 点击份额与模块曝光。', guardrail: '保留必要的导航可用性，避免把辅助入口直接删除。' });
+  if (ctas.length && ctaShare < 15) insights.push({ id: 'cta-share', priority: 'P1', title: '核心动作在已记录点击中的份额偏低', evidence: [`主 CTA 合计 ${format.format(ctaClicks)} 次，占已记录点击 ${ctaShare}%。`, top ? `最高点击元素为“${top.name}” (${top.share}%)。` : '当前没有可比较的头部点击元素。'], interpretation: '用户注意力可能被内容浏览、导航或辅助入口分流；仅有点击次数时不能解释为点击率或转化流失。', action: '在首屏收敛为一个主 CTA，强化与页面价值的一致性；在高兴趣内容后增加就近、低门槛的同目标 CTA。', validation: '有 PV/UV 后观察主 CTA 点击 UV / 页面 UV；当前先观察主 CTA 点击份额与模块曝光。', guardrail: '保留必要的导航可用性，避免把辅助入口直接删除。' });
   if (top && top.kind !== 'CTA' && top.share >= 20) insights.push({ id: 'interest-gap', priority: 'P1', title: '高兴趣内容缺少就近的下一步承接', evidence: [`“${top.name}”获得 ${format.format(top.clicks)} 次点击，占 ${top.share}%。`], interpretation: '用户主动探索这一信息，但可能需要进一步了解场景、成本或能力后才会行动。', action: `将“${top.name}”所在模块改为“信息 + 下一步”结构：补充适用场景、关键限制和一个与${evidence.goal}一致的 CTA。`, validation: '记录该模块曝光、详情展开、就近 CTA 点击和后续目标开始事件。', guardrail: '不要把内容点击当作用户已经完成注册、购买或留存。' });
-  if (behavior.elements.filter((item) => item.kind === 'CTA').length >= 4) insights.push({ id: 'competition', priority: 'P2', title: '页面可能存在竞争性 CTA', evidence: [`自动识别到 ${behavior.elements.filter((item) => item.kind === 'CTA').length} 个行动型元素。`], interpretation: '多个相近行动可能增加用户判断成本，也可能是不同阶段的合理重复，需要结合页面位置确认。', action: '定义首屏唯一主 CTA；其他位置保持同一业务目标或降级为辅助信息入口，并统一事件属性。', validation: '按 entry_position 比较 CTA 点击与 goal_start，验证是否出现路径分散。', guardrail: '不同位置的重复 CTA 可以保留，前提是其意图和埋点可区分。' });
+  if (detectedCtas.length >= 4) insights.push({ id: 'competition', priority: 'P2', title: '页面可能存在竞争性 CTA', evidence: [`自动识别到 ${detectedCtas.length} 个行动型元素。`], interpretation: '多个相近行动可能增加用户判断成本，也可能是不同阶段的合理重复，需要结合页面位置确认。', action: '定义首屏唯一主 CTA；其他位置保持同一业务目标或降级为辅助信息入口，并统一事件属性。', validation: '按 entry_position 比较 CTA 点击与 goal_start，验证是否出现路径分散。', guardrail: '不同位置的重复 CTA 可以保留，前提是其意图和埋点可区分。' });
+  const knowledgeMatches = matchKnowledgeRules(evidence, knowledgeRules, localRuleSignals(evidence, ctaShare, detectedCtas.length, top), ctaShare, detectedCtas.length, top);
+  for (const match of knowledgeMatches) if (!insights.some((insight) => insight.title === match.insight.title)) insights.push(match.insight);
+  insights.sort((a, b) => ({ P0: 0, P1: 1, P2: 2 })[a.priority] - ({ P0: 0, P1: 1, P2: 2 })[b.priority]);
   if (!insights.length) insights.push({ id: 'baseline', priority: 'P2', title: '点击分布暂未出现明确的规则异常', evidence: [`已导入 ${behavior.elements.length} 个元素，共 ${format.format(behavior.clicks)} 次点击。`], interpretation: '当前可先把热力图作为空间复核依据，并补齐主 CTA、模块、PV/UV 和结果事件。', action: '优先确认高点击元素的页面位置和业务角色，再制定针对性的页面改版假设。', validation: '补齐模块曝光和目标事件后，按同一时间窗口比较页面效率。', guardrail: '不能从当前数据推断转化或留存结果。' });
   const quality = Math.max(20, 100 - behavior.warnings.length * 12 - (duplicateLabels.length ? 22 : 0) - (!evidence.heatmapName ? 10 : 0) - (!evidence.primaryCta ? 8 : 0));
-  return { dataLevel: behavior.pagePv || behavior.pageUv ? 'L2 页面效率' : 'L1 点击观察', quality, warnings: behavior.warnings, insights, blueprint: defaultBlueprint(evidence), evidenceHash: await evidenceHash(evidence) };
+  return { dataLevel: behavior.pagePv || behavior.pageUv ? 'L2 页面效率' : 'L1 点击观察', quality, warnings: behavior.warnings, insights, blueprint: defaultBlueprint(evidence), evidenceHash: await evidenceHash(evidence), ruleMatches: knowledgeMatches.map((match) => match.trace) };
 }
 
 export async function runModelAnalysis(evidence: Evidence, models: ModelConfig[], local?: LocalAnalysis, onProgress?: (progress: ModelAnalysisProgress) => void, onResult?: (result: ModelResult) => void, knowledge: unknown[] = []): Promise<ModelResult[]> {

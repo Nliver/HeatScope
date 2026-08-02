@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowUpDown, Check, CheckmarkFilled, CircleAlert, CircleCheck, CircleDashed, Clock3, Crosshair, Download, FileSpreadsheet, ImagePlus, KeyRound, Layers3, ListFilter, LoaderCircle, LockKeyhole, MousePointer2, Pencil, Plus, Save, Settings2, SlidersHorizontal, Sparkles, Square, Wifi, X, ZoomIn, ZoomOut } from '../icons';
+import { Check, CheckmarkFilled, CircleAlert, CircleCheck, CircleDashed, Clock3, Crosshair, Download, FileSpreadsheet, ImagePlus, KeyRound, Layers3, ListFilter, LoaderCircle, LockKeyhole, MousePointer2, Pencil, Plus, Save, Settings2, SlidersHorizontal, Sparkles, Square, Wifi, X, ZoomIn, ZoomOut } from '../icons';
 import * as Dialog from '@radix-ui/react-dialog';
 import { usePathname, useRouter } from 'next/navigation';
 import { ChangeEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
@@ -169,7 +169,7 @@ type HistorySnapshotOverrides = {
 };
 
 function ModelConfigView({ models, onOpen }: { models: ModelConfig[]; onOpen(): void }) {
-  return <div className="console-page"><div className="console-page-head"><div><span>模型配置</span><h1>选择你的分析引擎</h1><InfoHint label="模型配置说明">配置并测试供应商模型后，诊断任务会读取已启用且连接成功的服务。</InfoHint></div><button type="button" className="console-button primary" onClick={onOpen}><Plus size={15} /> 添加模型</button></div><div className="model-config-panel"><div className="model-config-head"><div><h2>已配置服务</h2><InfoHint label="服务状态说明">只有启用且连接成功的模型才会参与分析和 HTML 生成。</InfoHint></div><span>{models.filter((item) => item.connectionStatus === 'success').length} 个已连接</span></div><div className="model-config-list">{models.map((model) => <article key={model.id}><div className="model-config-name"><span className={`model-dot ${model.connectionStatus || 'untested'}`} /><div><b>{model.name}</b><small>{model.model} · {protocolLabel(model.protocol)}</small></div></div><div className="model-config-meta"><span className={`model-state ${model.connectionStatus || 'untested'}`}>{model.connectionStatus === 'success' ? '已连接' : model.connectionStatus === 'failed' ? '连接失败' : model.connectionStatus === 'testing' ? '检测中' : '未检测'}</span><span>{model.enabled ? '启用中' : '已停用'}</span></div></article>)}<article className="model-config-local"><div><b>本地规则</b><small>确定性规则引擎 · 始终执行</small></div><span className="model-state success">可用</span></article>{models.length === 0 && <div className="model-config-empty"><KeyRound size={19} /><b>尚未添加模型服务</b></div>}</div><div className="model-config-foot"><InfoHint label="密钥存储说明">密钥只会随分析请求通过 HTTPS 发送，当前版本保存在浏览器工作区。</InfoHint><button type="button" className="console-button" onClick={onOpen}>管理模型配置</button></div></div></div>;
+  return <div className="console-page"><div className="console-page-head"><div><span>模型配置</span><h1>选择你的分析引擎</h1></div><button type="button" className="console-button primary" onClick={onOpen}><Plus size={15} /> 添加模型</button></div><div className="model-config-panel"><div className="model-config-head"><div><h2>已配置服务</h2></div><span>{models.filter((item) => item.connectionStatus === 'success').length} 个已连接</span></div><div className="model-config-list">{models.map((model) => <article key={model.id}><div className="model-config-name"><span className={`model-dot ${model.connectionStatus || 'untested'}`} /><div><b>{model.name}</b><small>{model.model} · {protocolLabel(model.protocol)}</small></div></div><div className="model-config-meta"><span className={`model-state ${model.connectionStatus || 'untested'}`}>{model.connectionStatus === 'success' ? '已连接' : model.connectionStatus === 'failed' ? '连接失败' : model.connectionStatus === 'testing' ? '检测中' : '未检测'}</span><span>{model.enabled ? '启用中' : '已停用'}</span></div></article>)}<article className="model-config-local"><div><b>本地规则</b><small>确定性规则引擎 · 始终执行</small></div><span className="model-state success">可用</span></article>{models.length === 0 && <div className="model-config-empty"><KeyRound size={19} /><b>尚未添加模型服务</b></div>}</div><div className="model-config-foot"><button type="button" className="console-button" onClick={onOpen}>管理模型配置</button></div></div></div>;
 }
 
 function readWorkspace(): PersistedWorkspace | undefined {
@@ -654,14 +654,29 @@ function PromptSynthesizer({ selectedModelIds, results, htmlJobs, htmlGenerating
   </section>;
 }
 
-function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onToggleCta, local, results, selectedHtmlModelIds, htmlGenerating, uiPrompt, composedPrompt, htmlJobs, onSelectModel, onToggleHtmlModel, onChangeUiPrompt, onGenerateHtml, onCoordinateChange }: {
+function AnalysisPendingState({ running, label }: { running: boolean; label: string }) {
+  return <div className={`analysis-pending-state ${running ? 'is-running' : ''}`} role="status" aria-live="polite">
+    <span className="analysis-pending-orbit" aria-hidden="true"><span />{running ? <LoaderCircle className="spin" size={19} /> : <Sparkles size={18} />}</span>
+    <b>{label}</b>
+  </div>;
+}
+
+function parseHeatmapAnchor(value: string): HeatmapAnchor | undefined {
+  const match = value.match(/@\s*([\d.]+)%,\s*([\d.]+)%\s*\((point|rect|circle)(?:;\s*([\d.]+)%\s*[x×]\s*([\d.]+)%)?\)/i);
+  if (!match) return undefined;
+  return { x: Number(match[1]), y: Number(match[2]), shape: match[3].toLowerCase() as HeatmapAnchor['shape'], width: Number(match[4]) || 8, height: Number(match[5]) || 8 };
+}
+
+function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, heatmapCoordinates = {}, markedCtas, onToggleCta, local, results, analysisRunning, selectedHtmlModelIds, htmlGenerating, uiPrompt, composedPrompt, htmlJobs, onSelectModel, onToggleHtmlModel, onChangeUiPrompt, onGenerateHtml, onCoordinateChange }: {
   behavior: ImportedClicks;
   heatmapUrl: string;
   heatmapName: string;
+  heatmapCoordinates?: Record<string, string>;
   markedCtas: string[];
   onToggleCta(item: ElementRecord): void;
   local?: LocalAnalysis;
   results: ModelResult[];
+  analysisRunning: boolean;
   selectedHtmlModelIds: string[];
   htmlGenerating: boolean;
   uiPrompt: string;
@@ -680,7 +695,7 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
   const [sort, setSort] = useState<'clicks' | 'share' | 'name'>('clicks');
   const [activeId, setActiveId] = useState(markedCtas.find((id) => behavior.elements.some((item) => item.id === id)) || behavior.elements[0]?.id || '');
   const [selectedIds, setSelectedIds] = useState<string[]>(markedCtas.length ? markedCtas : behavior.elements.slice(0, 1).map((item) => item.id));
-  const [anchors, setAnchors] = useState<Record<string, HeatmapAnchor>>({});
+  const [anchors, setAnchors] = useState<Record<string, HeatmapAnchor>>(() => Object.fromEntries(Object.entries(heatmapCoordinates).flatMap(([id, value]) => { const anchor = parseHeatmapAnchor(value); return anchor ? [[id, anchor]] : []; })));
   const [draftAnchor, setDraftAnchor] = useState<HeatmapAnchor>();
   const [selectedSourceId, setSelectedSourceId] = useState('');
   const [isNarrowAnalysis, setIsNarrowAnalysis] = useState(false);
@@ -702,6 +717,10 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
     if (!behavior.elements.some((item) => item.id === activeId)) setActiveId(behavior.elements[0]?.id || '');
     setSelectedIds((current) => current.filter((id) => behavior.elements.some((item) => item.id === id)));
   }, [activeId, behavior.elements]);
+
+  useEffect(() => {
+    setAnchors(Object.fromEntries(Object.entries(heatmapCoordinates).flatMap(([id, value]) => { const anchor = parseHeatmapAnchor(value); return anchor ? [[id, anchor]] : []; })));
+  }, [heatmapCoordinates]);
 
   const filteredElements = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -796,17 +815,19 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
   }
   function focusElement(id: string) {
     setActiveId(id);
-    setSelectedIds((items) => items.includes(id) ? items : [...items, id]);
     window.requestAnimationFrame(() => {
-      document.getElementById(`evidence-element-${behavior.elements.findIndex((item) => item.id === id)}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       document.getElementById('selected-area-analysis')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
   }
   function saveAnchor(id: string, anchor: HeatmapAnchor) {
     setAnchors((items) => ({ ...items, [id]: anchor }));
     const element = behavior.elements.find((item) => item.id === id);
-    if (element) onCoordinateChange(id, `${element.name} @ ${Math.round(anchor.x)}%, ${Math.round(anchor.y)}% (${anchor.shape})`);
+    if (element) onCoordinateChange(id, `${element.name} @ ${anchor.x.toFixed(1)}%, ${anchor.y.toFixed(1)}% (${anchor.shape}; ${anchor.width.toFixed(1)}% × ${anchor.height.toFixed(1)}%)`);
     focusElement(id);
+  }
+  function clearAnchor(id: string) {
+    setAnchors((items) => { const next = { ...items }; delete next[id]; return next; });
+    onCoordinateChange(id, '');
   }
   function handleImageClick(event: ReactPointerEvent<HTMLDivElement>) {
     if (tool !== 'pointer' || !activeElement) return;
@@ -842,18 +863,19 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
   function markSelectedAsCta() { behavior.elements.filter((item) => selectedIds.includes(item.id) && !markedCtas.includes(item.id)).forEach(onToggleCta); }
   function selectFiltered() { setSelectedIds((items) => [...new Set([...items, ...filteredElements.map((item) => item.id)])]); if (filteredElements[0]) setActiveId(filteredElements[0].id); }
   function clearSelected() { setSelectedIds([]); }
+  function resetFilters() { setQuery(''); setKindFilter('all'); setSort('clicks'); }
   return <section className="evidence-workbench" aria-label="热力图证据工作台">
     <header className="evidence-workbench-head">
-      <div><span className="canvas-eyebrow">证据工作台</span><h2>热力图与分析结果联动</h2><span className="evidence-meta-line">{heatmapName || '未上传热力图'} · {number.format(behavior.clicks)} 次点击 · {behavior.elements.length} 个元素</span><InfoHint label="证据联动说明">点击、矩形和圆形工具会把热力图坐标同步到右侧分析。</InfoHint></div>
+      <div><span className="canvas-eyebrow">证据工作台</span><h2>热力图与分析结果联动</h2><div className="evidence-meta-line"><strong title={heatmapName || '未上传热力图'}>{heatmapName || '未上传热力图'}</strong><span><b>{number.format(behavior.clicks)}</b> 次点击</span><span><b>{behavior.elements.length}</b> 个元素</span></div></div>
       <div className="evidence-kpis"><div><b>{selectedIds.length}</b><span>选中元素</span></div><div><b>{selectedShare}%</b><span>选中点击份额</span></div></div>
     </header>
     <div className="evidence-canvas-grid">
       <div className="heatmap-pane">
         <div className="heatmap-toolbar">
           <div className="toolbar-group" aria-label="热力图选择工具">
-            <button type="button" className={tool === 'pointer' ? 'active' : ''} onClick={() => setTool('pointer')} title="点击定位"><MousePointer2 size={15} />点击</button>
-            <button type="button" className={tool === 'rect' ? 'active' : ''} onClick={() => setTool('rect')} title="拖拽矩形选择"><Square size={15} />矩形</button>
-            <button type="button" className={tool === 'circle' ? 'active' : ''} onClick={() => setTool('circle')} title="拖拽圆形选择"><CircleDashed size={15} />圆形</button>
+            <button type="button" aria-pressed={tool === 'pointer'} className={tool === 'pointer' ? 'active' : ''} onClick={() => setTool('pointer')} title="点击定位"><MousePointer2 size={15} />点标注</button>
+            <button type="button" aria-pressed={tool === 'rect'} className={tool === 'rect' ? 'active' : ''} onClick={() => setTool('rect')} title="拖拽矩形选择"><Square size={15} />框选</button>
+            <button type="button" aria-pressed={tool === 'circle'} className={tool === 'circle' ? 'active' : ''} onClick={() => setTool('circle')} title="拖拽圆形选择"><CircleDashed size={15} />圈选</button>
           </div>
           <div className="toolbar-group heatmap-zoom" aria-label="缩放热力图">
             <button type="button" onClick={() => setZoom((value) => Math.max(.75, Number((value - .25).toFixed(2))))} title="缩小"><ZoomOut size={15} /></button>
@@ -865,7 +887,7 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
           {heatmapUrl ? <div className={`heatmap-stage tool-${tool}`} ref={imageBoxRef} style={{ width: `${zoom * 100}%` }} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerCancel} onClick={handleImageClick}>
             <img src={heatmapUrl} alt="上传的页面热力图" draggable={false} />
             <div className="coordinate-grid" aria-hidden="true" />
-            <div className="heatmap-overlay-hint"><Crosshair size={13} /> {tool === 'pointer' ? '点击图中位置定位当前元素' : '拖拽选择区域后同步到右侧'}</div>
+            <div className="heatmap-overlay-hint"><Crosshair size={13} /> 当前标注：{activeElement?.name || '请先选择右侧元素'} · {tool === 'pointer' ? '点击落点' : '拖拽选区'}</div>
             {draftAnchor && <div className={`heatmap-anchor draft ${draftAnchor.shape}`} style={{ left: `${draftAnchor.x}%`, top: `${draftAnchor.y}%`, width: `${draftAnchor.width}%`, height: `${draftAnchor.height}%` }} aria-hidden="true" />}
             {Object.entries(anchors).map(([id, anchor]) => {
               const item = behavior.elements.find((element) => element.id === id); if (!item) return null;
@@ -882,8 +904,8 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
         </header>
         <section className="analysis-module-card element-confirm-card">
           <header><div><span className="module-kicker"><ListFilter size={13} /> 元素确认</span><h3>选择需要追踪的元素</h3></div><button type="button" className="compact-action" onClick={markSelectedAsCta} disabled={!selectedIds.length}><Check size={14} />批量标记核心</button></header>
-          <div className="element-filters"><label><SlidersHorizontal size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选元素、模块或选择器" /></label><select value={kindFilter} onChange={(event) => setKindFilter(event.target.value as typeof kindFilter)} aria-label="元素类型筛选"><option value="all">全部类型</option><option value="CTA">CTA</option><option value="内容">内容</option><option value="导航">导航</option></select><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} aria-label="元素排序"><option value="clicks">点击最多</option><option value="share">份额最高</option><option value="name">名称排序</option></select><ArrowUpDown size={14} /></div>
-          <div className="batch-selection-bar"><span>{selectedElements.slice(0, 2).map((item) => item.name).join('、') || '尚未选择'}{selectedElements.length > 2 ? ` 等 ${selectedElements.length} 个` : ''}</span><div><button type="button" onClick={selectFiltered} disabled={!filteredElements.length}>选择筛选结果</button><button type="button" onClick={clearSelected} disabled={!selectedIds.length}>清空</button></div></div>
+          <div className="element-filters"><label><SlidersHorizontal size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选元素、模块或选择器" /></label><select value={kindFilter} onChange={(event) => setKindFilter(event.target.value as typeof kindFilter)} aria-label="元素类型筛选"><option value="all">全部类型</option><option value="CTA">CTA</option><option value="内容">内容</option><option value="导航">导航</option></select><select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} aria-label="元素排序"><option value="clicks">点击最多</option><option value="share">份额最高</option><option value="name">名称排序</option></select></div>
+          <div className="batch-selection-bar"><span><b>{filteredElements.length}</b> / {behavior.elements.length} 项 · 已勾选 {selectedIds.length} 项</span><div><button type="button" onClick={selectFiltered} disabled={!filteredElements.length}>全选结果</button><button type="button" onClick={clearSelected} disabled={!selectedIds.length}>清空勾选</button><button type="button" onClick={resetFilters} disabled={!query && kindFilter === 'all' && sort === 'clicks'}>重置筛选</button></div></div>
           <div className="element-list" role="listbox" aria-label="可分析元素">
             {filteredElements.map((item, index) => <div id={`evidence-element-${behavior.elements.findIndex((element) => element.id === item.id)}`} className={`element-list-row ${activeId === item.id ? 'active' : ''}`} key={item.id} onClick={() => focusElement(item.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') focusElement(item.id); }} role="option" tabIndex={0} aria-selected={activeId === item.id}>
               <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggleSelected(item.id)} onClick={(event) => event.stopPropagation()} aria-label={`选择 ${item.name}`} /><span className="element-row-index">{String(index + 1).padStart(2, '0')}</span><span className="element-row-copy"><b>{item.name}</b><small>{item.module || item.selector || item.kind}{markedCtas.includes(item.id) ? ' · 核心 CTA' : ''}</small></span><strong>{number.format(item.clicks)}<small>{item.share}%</small></strong>
@@ -893,17 +915,17 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
         </section>
         <section id="selected-area-analysis" className="analysis-module-card selected-detail-card">
           <header><div><span className="module-kicker"><Crosshair size={13} /> 选中区域</span><h3>{activeElement?.name || '尚未选择'}</h3></div>{activeElement && <span className={`kind-badge kind-${activeElement.kind}`}>{activeElement.kind}</span>}</header>
-          {activeElement ? <div className="selected-detail-grid"><div><span>点击次数</span><b>{number.format(activeElement.clicks)}</b></div><div><span>点击份额</span><b>{activeElement.share}%</b></div><div><span>页面位置</span><b>{activeElement.module || '待补模块'}</b></div><div><span>坐标</span><b>{anchors[activeElement.id] ? `${Math.round(anchors[activeElement.id].x)}%, ${Math.round(anchors[activeElement.id].y)}%` : '待定位'}</b></div></div> : <p className="module-empty-copy">待选择元素</p>}
+          {activeElement ? <><div className="selected-detail-grid"><div><span>点击次数</span><b>{number.format(activeElement.clicks)}</b></div><div><span>点击份额</span><b>{activeElement.share}%</b></div><div><span>页面位置</span><b>{activeElement.module || '待补模块'}</b></div><div><span>坐标</span><b>{anchors[activeElement.id] ? `${Math.round(anchors[activeElement.id].x)}%, ${Math.round(anchors[activeElement.id].y)}%` : '待定位'}</b></div></div>{anchors[activeElement.id] && <button type="button" className="clear-coordinate-action" onClick={() => clearAnchor(activeElement.id)}>清除当前标注</button>}</> : <p className="module-empty-copy">待选择元素</p>}
           {activeElement && <div className="element-signal-list">{activeSignals.map((signal) => <article className={`element-signal ${signal.tone}`} key={signal.label}><span>{signal.label}</span><b>{signal.title}</b><p>{signal.body}</p></article>)}</div>}
         </section>
         <section className="analysis-module-card insights-card">
           <header><div><span className="module-kicker"><Sparkles size={13} /> 本地规则洞察</span><h3>证据驱动的优先动作</h3></div>{local && <span className="quality-badge">质量 {local.quality}</span>}</header>
-          {local ? <div className="compact-insight-list">{local.insights.slice(0, 4).map((insight) => <article key={insight.id} className={`compact-insight ${insight.priority.toLowerCase()}`}><div><span>{insight.priority}</span><b>{insight.title}</b></div><p>{insight.action}</p></article>)}</div> : <p className="module-empty-copy">待分析</p>}
+          {local ? <div className="compact-insight-list">{local.insights.slice(0, 4).map((insight) => <article key={insight.id} className={`compact-insight ${insight.priority.toLowerCase()}`}><div><span>{insight.priority}</span><b>{insight.title}</b></div><p>{insight.action}</p></article>)}</div> : <AnalysisPendingState running={analysisRunning} label={analysisRunning ? '本地规则匹配中' : '等待开始分析'} />}
         </section>
       </aside>
     </div>
     <section className="model-analysis-section" aria-label="模型分析反馈">
-      <header><div><span className="module-kicker"><Layers3 size={13} /> 模型分析</span><h3>模型分析反馈</h3><InfoHint label="分析源说明">左侧按分析源快速对比，右侧查看当前源的完整问题与建议；勾选模型后生成独立 HTML。</InfoHint></div>{results.length > 0 && <span className="quality-badge">{selectedHtmlModelIds.length} 个待生成 / {results.length} 个模型</span>}</header>
+      <header><div><span className="module-kicker"><Layers3 size={13} /> 模型分析</span><h3>模型分析反馈</h3></div>{results.length > 0 && <span className="quality-badge">{selectedHtmlModelIds.length} 个待生成 / {results.length} 个模型</span>}</header>
       {analysisSources.length ? <div className="analysis-master-detail">
         <div className="analysis-master-pane" ref={masterScrollRef}>
           <div className="analysis-pane-label"><span>分析源</span><small>{analysisSources.length} 个来源</small></div>
@@ -927,7 +949,7 @@ function EvidenceWorkbench({ behavior, heatmapUrl, heatmapName, markedCtas, onTo
             {selectedSource.type === 'model' && selectedSource.result?.status === 'failed' && <p className="model-feedback-error">{formatProviderError(selectedSource.result.error)}</p>}
           </div>
         </article>}
-      </div> : <p className="module-empty-copy">待分析</p>}
+      </div> : <AnalysisPendingState running={analysisRunning} label={analysisRunning ? (local ? '模型正在逐个返回' : '正在准备本地分析') : '等待开始分析'} />}
     </section>
     <PromptSynthesizer selectedModelIds={selectedHtmlModelIds} results={results} htmlJobs={htmlJobs} htmlGenerating={htmlGenerating} canGenerate={Boolean(local)} uiPrompt={uiPrompt} composedPrompt={composedPrompt} onChangeUiPrompt={onChangeUiPrompt} onGenerateHtml={onGenerateHtml} />
   </section>;
@@ -1187,31 +1209,15 @@ export default function Page() {
     if (heatmapUrl.startsWith('blob:')) URL.revokeObjectURL(heatmapUrl);
     setDraftId(''); setComparisonBaseline(undefined); setHistoryId(''); setUrl(''); setGoal('注册/试用'); setDevice('桌面端'); setAudience('2B'); setBrandColor('#0A9C8A'); setBrandTone('科技、可信、克制'); setPrimaryCta(''); setNotes(''); setPageBaseline(undefined); setBaselineError(''); setBehavior(undefined); setHeatmapName(''); setHeatmapUrl(''); setHeatmapPreviewUrl(''); setHeatmapDataUrl(''); setIncludeHeatmapInModel(true); setMarkedCtas([]); setHeatmapCoordinates({}); setUiPrompt(DEFAULT_UI_PROMPT); setEvidenceConfirmed(false); resetAnalysis(); setCurrentStep(0); setError(''); setNotice('当前诊断已重置；模型配置、知识库和历史记录均已保留。');
   }
-  function resetAfterStep(step: WizardStepIndex) {
-    if (step === 0) {
-      setEvidenceConfirmed(false);
-      resetAnalysis();
-      return;
-    }
-    if (step === 1) {
-      // Returning from Step 3 to Step 2 keeps generated jobs and results available.
-      // Only the later review state is no longer applicable while editing generation.
-      setAfterBehavior(undefined);
-      return;
-    }
-    if (step === 2) setAfterBehavior(undefined);
-  }
   function requestStep(step: WizardStepIndex) {
     setConsoleView('task');
-    if (step > currentStep) {
+    const highestAccessibleStep: WizardStepIndex = displayedDesign || hasHtmlDesign ? 3 : evidenceConfirmed || local ? 1 : 0;
+    if (step > highestAccessibleStep) {
       nudgeMobile('请先完成前序步骤。');
       return;
     }
-    if (step < currentStep) {
-      resetAfterStep(step);
-      setCurrentStep(step);
-      nudgeMobile('已返回上一步，已有生成结果继续保留。');
-    }
+    setCurrentStep(step);
+    if (step < currentStep) nudgeMobile('已返回上一步，已有分析与生成结果继续保留。');
   }
   function jumpTo(id: string) {
     const step = wizardStepIds.indexOf(id as typeof wizardStepIds[number]);
@@ -1297,10 +1303,10 @@ export default function Page() {
     const taskId = updateHistory('running', historyId || safeId(), { stage: 2 });
     setRunning(true); setError(''); resetAnalysis(); setModelProgress(availableModels.map((model) => ({ modelId: model.id, modelName: model.name, protocol: model.protocol, status: 'queued' as const }))); setNotice('模型分析已启动：先运行本地规则引擎。');
     try {
-      const localResult = await runLocalAnalysis(evidence);
+      const knowledgeContext = readKnowledgeLibrary().entries.filter((entry) => entry.enabled).map(({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags, enabled }) => ({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags, enabled }));
+      const localResult = await runLocalAnalysis(evidence, knowledgeContext);
       setLocal(localResult);
       setNotice(availableModels.length ? `本地规则已完成，开始调用 ${availableModels.length} 个模型。` : '本地规则已完成；配置并连接至少一个模型后才能创建 HTML 生成任务。');
-      const knowledgeContext = readKnowledgeLibrary().entries.filter((entry) => entry.enabled).map(({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags }) => ({ id, category, severity, title, principle, evidence, action, validation, guardrail, tags }));
       const modelResults = availableModels.length ? await runModelAnalysis(
         evidence,
         availableModels,
@@ -1351,7 +1357,15 @@ export default function Page() {
   }
   function changeUiPrompt(value: string) { clearHtmlOutputs(); setUiPrompt(value); }
   function changeVisualInput(value: boolean) { clearHtmlOutputs(); setIncludeHeatmapInModel(value); }
-  function changeHeatmapCoordinate(id: string, value: string) { clearHtmlOutputs(); setHeatmapCoordinates((items) => ({ ...items, [id]: value })); }
+  function changeHeatmapCoordinate(id: string, value: string) {
+    clearHtmlOutputs();
+    setHeatmapCoordinates((items) => {
+      const next = { ...items };
+      if (value) next[id] = value;
+      else delete next[id];
+      return next;
+    });
+  }
   async function generateHtmlDesigns() {
     if (!evidence || !local) { setError('请先完成本次页面分析，再生成改版 UI。'); return; }
     const selectedModels = selectedGenerationModels;
@@ -1509,7 +1523,6 @@ export default function Page() {
                   <div>
                     <span className="canvas-eyebrow">Step 1</span>
                     <h1>先上传页面证据，再进入分析。</h1>
-                    <InfoHint label="证据范围说明" placement="start">模型只会基于 URL、热力图、点击数据、受众和品牌变量生成诊断与 UI。</InfoHint>
                   </div>
                   <div className="canvas-actions"><button type="button" className="console-button danger diagnosis-reset-button" onClick={resetCurrentDiagnosis}>重置当前诊断</button></div>
                 </div>
@@ -1608,7 +1621,7 @@ export default function Page() {
                     {baselineError && <p className="inline-error baseline-error">{baselineError}</p>}
                   </div>
 
-                  {behavior && <EvidenceWorkbench behavior={behavior} heatmapUrl={heatmapUrl} heatmapName={heatmapName} markedCtas={markedCtas} onToggleCta={toggleCta} local={local} results={results} selectedHtmlModelIds={selectedHtmlModelIds} htmlGenerating={htmlGenerating} uiPrompt={uiPrompt} composedPrompt={composedPrompt} htmlJobs={htmlJobs} onSelectModel={setSelectedModelId} onToggleHtmlModel={toggleHtmlModel} onChangeUiPrompt={changeUiPrompt} onGenerateHtml={generateHtmlDesigns} onCoordinateChange={changeHeatmapCoordinate} />}
+                  {behavior && <EvidenceWorkbench behavior={behavior} heatmapUrl={heatmapUrl} heatmapName={heatmapName} heatmapCoordinates={heatmapCoordinates} markedCtas={markedCtas} onToggleCta={toggleCta} local={local} results={results} analysisRunning={running} selectedHtmlModelIds={selectedHtmlModelIds} htmlGenerating={htmlGenerating} uiPrompt={uiPrompt} composedPrompt={composedPrompt} htmlJobs={htmlJobs} onSelectModel={setSelectedModelId} onToggleHtmlModel={toggleHtmlModel} onChangeUiPrompt={changeUiPrompt} onGenerateHtml={generateHtmlDesigns} onCoordinateChange={changeHeatmapCoordinate} />}
                 </section>}
 
                 {currentPanel === 'output' && <section id="output" className="canvas-panel">

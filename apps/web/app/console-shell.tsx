@@ -4,7 +4,6 @@ import { BookOpen, ClipboardList, Clock3, Download, Menu, PanelLeftClose, PanelL
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { HISTORY_UPDATED_EVENT, readHistoryRecords } from '../lib/history';
-import { InfoHint } from './ui-text';
 
 export type ConsoleView = 'task' | 'knowledge' | 'history' | 'models';
 
@@ -47,7 +46,7 @@ export function ConsoleSidebar({ active, onChange, historyCount, modelCount, mob
           <Icon size={17} strokeWidth={1.8} /><span><b>{label}</b><small>{description}</small></span>{id === 'history' && <em>{historyCount}</em>}{id === 'models' && modelCount > 0 && <em>{modelCount}</em>}
         </button>)}
       </nav>
-      <div className="console-sidebar-note"><span>当前工作区</span><b>本地保存</b><InfoHint label="工作区存储说明">模型密钥仅在分析请求中使用，不写入项目文件。</InfoHint></div>
+      <div className="console-sidebar-note"><span>当前工作区</span><b>本地保存</b></div>
     </aside>
   </>;
 }
