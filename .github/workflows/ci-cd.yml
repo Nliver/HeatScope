@@ -8,8 +8,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  security-events: write
+  contents: write # commit 评论需要写权限
+  pull-requests: write # PR 评论
+  issues: write # PR 评论走 issues API
+  security-events: write # gitleaks 上报
 
 concurrency:
   group: heatscope-${{ github.workflow }}-${{ github.ref }}
@@ -27,7 +29,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -35,8 +37,6 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
-      # apps/web has no separate lockfile yet, so install its package manifest
-      # explicitly without writing a lockfile into the repository checkout.
       - name: Install frontend dependencies
         working-directory: apps/web
         run: npm install --no-audit --no-fund --package-lock=false
@@ -62,14 +62,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout full history
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Scan repository for credentials
-        uses: docker://zricethezav/gitleaks:v8.28.0
-        with:
-          args: detect --source=/github/workspace --no-banner --redact --exit-code 1
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   github-build:
     name: GitHub deployment build gate
@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download verified frontend artifact
         uses: actions/download-artifact@v6
@@ -90,43 +90,173 @@ jobs:
         working-directory: apps/web
         run: test -f .next/BUILD_ID
 
-  vercel-production:
-    name: Deploy to Vercel production
-    needs: [frontend-test, secret-scan, github-build]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+  vercel-pr-comment:
+    name: Comment Vercel preview on PR
+    needs: [frontend-test, secret-scan]
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment:
-      name: production
-      url: ${{ steps.deploy.outputs.url }}
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install Vercel CLI dependencies
-        run: npm ci
-
-      - name: Pull Vercel production settings
-        run: npx vercel --cwd apps/web pull --yes --environment=production --token="$VERCEL_TOKEN"
-
-      - name: Build with Vercel
-        run: npx vercel --cwd apps/web build --prod --token="$VERCEL_TOKEN"
-
-      - name: Deploy prebuilt output
-        id: deploy
+      - name: Wait for Vercel preview deployment and comment on PR
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          deployment_json="$(npx vercel --cwd apps/web deploy --prebuilt --prod --yes --format=json --token="$VERCEL_TOKEN")"
-          deployment_url="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value.url || value.inspectorUrl || "")' "$deployment_json")"
-          test -n "$deployment_url"
-          echo "url=$deployment_url" >> "$GITHUB_OUTPUT"
-          echo "Deployed: $deployment_url"
+          MARKER="<!-- vercel-preview -->"
+          STATE=""
+          URL=""
+          INSPECTOR=""
+          for i in $(seq 1 60); do
+            sleep 10
+            RESPONSE=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&limit=10")
+
+            # 按 PR head commit 的 SHA 精确匹配本次 preview 部署
+            DEPLOY=$(echo "$RESPONSE" | jq -r --arg sha "$HEAD_SHA" \
+              '.deployments[] | select(.meta.githubCommitSha == $sha) | select(.target != "production") | {readyState, url, inspectorUrl} | tojson' | head -1)
+
+            STATE=$(echo "$DEPLOY" | jq -r '.readyState // empty')
+            URL=$(echo "$DEPLOY" | jq -r '.url // empty')
+            INSPECTOR=$(echo "$DEPLOY" | jq -r '.inspectorUrl // empty')
+
+            if [ "$STATE" = "READY" ] || [ "$STATE" = "ERROR" ]; then break; fi
+          done
+
+          if [ "$STATE" = "READY" ]; then
+            BODY=$(cat <<EOF
+          ${MARKER}
+          ## 🚀 预览部署就绪
+
+          | 项目 | 状态 |
+          |------|------|
+          | 预览地址 | https://${URL} |
+          | 分支 | ${HEAD_REF} |
+          | 构建日志 | ${INSPECTOR} |
+
+          > CI 检查已通过，预览部署由 Vercel 自动触发。
+          EOF
+            )
+          elif [ "$STATE" = "ERROR" ]; then
+            BODY=$(cat <<EOF
+          ${MARKER}
+          ## ❌ 预览部署失败
+
+          | 项目 | 状态 |
+          |------|------|
+          | 分支 | ${HEAD_REF} |
+          | 构建日志 | ${INSPECTOR} |
+          EOF
+            )
+          else
+            BODY=$(cat <<EOF
+          ${MARKER}
+          ## ⏳ 预览部署超时
+
+          10 分钟内未等到 Vercel 部署结果，请前往 Vercel Dashboard 查看。
+          EOF
+            )
+          fi
+
+          # 同一 PR 多次 push 时更新旧评论而不是重复发新评论
+          EXISTING_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" \
+            | jq -r --arg m "$MARKER" '.[] | select(.body | startswith($m)) | .id' | head -1)
+
+          if [ -n "$EXISTING_ID" ]; then
+            curl -s -X PATCH \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${REPO}/issues/comments/${EXISTING_ID}" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" > /dev/null
+          else
+            curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" > /dev/null
+          fi
+
+          echo "Final preview state: ${STATE:-TIMEOUT}"
+
+  vercel-production-comment:
+    name: Comment Vercel production deployment
+    needs: [frontend-test, secret-scan, github-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for Vercel production deployment and comment on commit
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          PRODUCTION_URL: https://shiz-zeta.vercel.app
+        run: |
+          STATE=""
+          INSPECTOR=""
+          for i in $(seq 1 60); do
+            sleep 10
+            RESPONSE=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&limit=10")
+
+            # 按 commit SHA 精确匹配本次 production 部署
+            DEPLOY=$(echo "$RESPONSE" | jq -r --arg sha "$COMMIT_SHA" \
+              '.deployments[] | select(.meta.githubCommitSha == $sha) | select(.target == "production") | {readyState, inspectorUrl} | tojson' | head -1)
+
+            STATE=$(echo "$DEPLOY" | jq -r '.readyState // empty')
+            INSPECTOR=$(echo "$DEPLOY" | jq -r '.inspectorUrl // empty')
+
+            if [ "$STATE" = "READY" ] || [ "$STATE" = "ERROR" ]; then break; fi
+          done
+
+          if [ "$STATE" = "READY" ]; then
+            BODY=$(cat <<EOF
+          <!-- vercel-production -->
+          ## ✅ 生产环境部署就绪
+
+          | 项目 | 状态 |
+          |------|------|
+          | 线上地址 | ${PRODUCTION_URL} |
+          | Commit | ${COMMIT_SHA:0:7} |
+          | 构建日志 | ${INSPECTOR} |
+
+          > CI 检查已通过，生产部署由 Vercel 自动触发。
+          EOF
+            )
+          elif [ "$STATE" = "ERROR" ]; then
+            BODY=$(cat <<EOF
+          <!-- vercel-production -->
+          ## ❌ 生产环境部署失败
+
+          | 项目 | 状态 |
+          |------|------|
+          | Commit | ${COMMIT_SHA:0:7} |
+          | 构建日志 | ${INSPECTOR} |
+          EOF
+            )
+          else
+            BODY=$(cat <<EOF
+          <!-- vercel-production -->
+          ## ⏳ 生产部署超时
+
+          10 分钟内未等到 Vercel 部署结果，请前往 Vercel Dashboard 查看。
+          EOF
+            )
+          fi
+
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${REPO}/commits/${COMMIT_SHA}/comments" \
+            -d "$(jq -n --arg b "$BODY" '{body: $b}')" > /dev/null
+
+          echo "Final production state: ${STATE:-TIMEOUT}"
